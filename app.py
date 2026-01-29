@@ -658,8 +658,7 @@ def route(pathname):
 
 @dash_app.callback(Output("top-stats", "children"), Input("top_refresh", "n_intervals"))
 def update_top_stats(_):
-    now_dt = datetime.now()
-    now_str = now_dt.strftime("%H:%M:%S")
+    updated_str = datetime.now().strftime("%H:%M:%S")
 
     with LOCK:
         if not SEED_DONE:
@@ -669,8 +668,8 @@ def update_top_stats(_):
                 [
                     dbc.Badge("Seeding", color="warning", className="stat-badge"),
                     html.Div(f"{done}/{total}", className="stat-chip"),
-                    html.Div(f"Now {now_str}", className="stat-chip"),
                     html.Div(f"Errors {SEED_ERRORS}", className="stat-chip"),
+                    html.Div(f"Updated {updated_str}", className="stat-chip"),
                 ],
                 className="top-stats-wrap",
             )
@@ -678,11 +677,6 @@ def update_top_stats(_):
         offline = (time.time() - LAST_TICK_TS) > 10 if LAST_TICK_TS else True
         tps = _get_tps()
         tot = TOTAL_TICKS
-        last_dt = LAST_TICK_DT
-        age = (time.time() - LAST_TICK_TS) if LAST_TICK_TS else None
-
-    last_str = last_dt.strftime("%H:%M:%S") if last_dt else "--:--:--"
-    age_str = f"{age:.0f}s" if age is not None else "--"
 
     return html.Div(
         [
@@ -691,9 +685,7 @@ def update_top_stats(_):
                       className="stat-badge"),
             html.Div(f"TPS {tps:.1f}", className="stat-chip"),
             html.Div(f"Ticks {tot:,}", className="stat-chip"),
-            html.Div(f"Now {now_str}", className="stat-chip"),
-            html.Div(f"Last {last_str}", className="stat-chip"),
-            html.Div(f"Age {age_str}", className="stat-chip"),
+            html.Div(f"Updated {updated_str}", className="stat-chip"),
         ],
         className="top-stats-wrap",
     )
