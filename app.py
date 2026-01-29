@@ -135,7 +135,12 @@ def update_from_tick(tick: dict):
 
     last_c = LAST_CUMVOL.get(token)
     LAST_CUMVOL[token] = cumvol
-    vol_delta = max(0, (cumvol - last_c)) if last_c is not None else 0
+
+    # IMPORTANT: handle new-day reset of cumulative volume
+    if last_c is not None and cumvol < last_c:
+        vol_delta = cumvol
+    else:
+        vol_delta = max(0, (cumvol - last_c)) if last_c is not None else 0
 
     if token not in CUR:
         CUR[token] = {
@@ -174,33 +179,53 @@ def true_range(h, l, prev_c):
     return max(h - l, abs(h - prev_c), abs(l - prev_c))
 
 
-def compute_spike_for_token(token, atr_n=14, rvol_n=20, use_close_quality=True):
+def compute_spike_for_token(
+    token,
+    atr_n=14,
+    rvol_n=20,
+    use_close_quality=True,
+    use_completed_bar=True,  # Option A: use last completed 5m candle (stable within each 5m)
+):
     """
     Spike (signed) = sign(C-O) * RVOL * (Range/ATR) * close_quality_factor
     close_quality_factor in [0.5..1.0]
+
+    If use_completed_bar=True:
+      - Spike is computed on the last COMPLETED 5m candle (BARS[-1])
+      - So it won't "reset" at the start of each new 5m candle.
     """
     ensure(token)
     bars = list(BARS[token])
-    cur = CUR.get(token)
-    if cur is None:
-        return None
 
-    if len(bars) < max(atr_n + 1, rvol_n):
-        return None
+    if use_completed_bar:
+        # Score last completed bar. Use earlier bars as history.
+        if len(bars) < max(atr_n + 2, rvol_n + 1):
+            return None
+        cur = bars[-1]
+        hist = bars[:-1]
+    else:
+        # Score current forming bar (original behavior)
+        cur = CUR.get(token)
+        if cur is None:
+            return None
+        if len(bars) < max(atr_n + 1, rvol_n):
+            return None
+        hist = bars
 
-    # ATR
-    last_completed = bars[-(atr_n + 1):]
+    # ATR from history (need atr_n + 1 bars to incorporate prev_close)
+    last_completed = hist[-(atr_n + 1):]
     trs = []
     prev_close = None
     for b in last_completed:
         trs.append(true_range(b["high"], b["low"], prev_close))
         prev_close = b["close"]
+
     atr = sum(trs[-atr_n:]) / atr_n if atr_n else None
     if not atr or atr == 0:
         return None
 
-    # RVOL baseline
-    vols = [b["vol_5m"] for b in bars[-rvol_n:]]
+    # RVOL baseline from history (exclude the bar being scored when use_completed_bar=True)
+    vols = [b["vol_5m"] for b in hist[-rvol_n:]]
     avg_vol = (sum(vols) / len(vols)) if vols else None
     if not avg_vol or avg_vol == 0:
         return None
@@ -236,7 +261,8 @@ def compute_sector_strength_signed():
             tok = symbol_to_token.get(s)
             if not tok:
                 continue
-            sp = compute_spike_for_token(tok)
+            # Option A: stable spike (last completed candle)
+            sp = compute_spike_for_token(tok, use_completed_bar=True)
             if sp and sp["spike"] is not None:
                 vals.append(sp["spike"])
         out[sector] = (sum(vals) / len(vals)) if vals else 0.0
@@ -260,7 +286,8 @@ def sector_rows_sorted_both_sides(sector: str):
         chg = (ltp - day_open) if day_open else None
         chg_pct = ((ltp - day_open) / day_open * 100.0) if day_open else None
 
-        sp = compute_spike_for_token(tok)
+        # Option A: stable spike (last completed candle)
+        sp = compute_spike_for_token(tok, use_completed_bar=True)
 
         rows.append({
             "Symbol": s,
@@ -326,7 +353,7 @@ def seed_history_once(days_back: int = 7, interval: str = "5minute", per_req_sle
                         "vol_5m": c.get("volume", 0) or 0,
                     })
 
-                # synthetic current candle so Spike can compute before first live ticks
+                # keep synthetic CUR (not required for Option A spike, but still useful for showing Price before ticks)
                 if candles and tok not in CUR:
                     last_close = candles[-1]["close"]
                     CUR[tok] = {
@@ -494,7 +521,7 @@ dash_app.layout = dbc.Container(
     children=[
         dcc.Location(id="url"),
         dcc.Interval(id="refresh", interval=2000, n_intervals=0),
-         dcc.Interval(id="top_refresh", interval=1000, n_intervals=0),
+        dcc.Interval(id="top_refresh", interval=1000, n_intervals=0),
 
         # Top bar skeleton (exists always -> safe for callbacks)
         html.Div(
@@ -656,8 +683,6 @@ def _dash_redirect():
     return RedirectResponse(url="/dash/")
 
 app.mount("/dash", WSGIMiddleware(server))
-
-from fastapi.responses import RedirectResponse
 
 @app.get("/")
 def root():
