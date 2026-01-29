@@ -58,7 +58,7 @@ symbol_to_name = dict(zip(ins["tradingsymbol"], ins["name"]))
 TOKENS = sorted(symbol_to_token.values())
 
 
-# ------------------- LIVE STATE (5m aggregation for Spike; Change% is from DAY_OPEN) -------------------
+# ------------------- LIVE STATE -------------------
 LOCK = threading.Lock()
 
 CUR = {}          # token -> current 5m candle
@@ -81,6 +81,13 @@ _seed_started = False
 SEED_DONE = False
 SEED_PROGRESS = {"done": 0, "total": len(TOKENS)}
 SEED_ERRORS = 0
+
+
+def _r(x, n=2):
+    try:
+        return round(float(x), n) if x is not None else None
+    except Exception:
+        return None
 
 
 def floor_5m(dt: datetime):
@@ -116,7 +123,7 @@ def _get_tps():
 
 
 def update_from_tick(tick: dict):
-    """Update day values + build 5m candle from ticks."""
+    """Update DAY_OPEN/DAY_VOL + build 5m candles for Spike."""
     token = tick["instrument_token"]
     ensure(token)
 
@@ -128,7 +135,7 @@ def update_from_tick(tick: dict):
     if ltp is None or cumvol is None:
         return
 
-    # Market open baseline (does not reset intraday)
+    # baseline from market open (does not reset intraday)
     DAY_OPEN[token] = ohlc.get("open") or DAY_OPEN.get(token)
     DAY_VOL[token] = cumvol
 
@@ -181,8 +188,7 @@ def true_range(h, l, prev_c):
 
 def compute_spike_for_token(token, atr_n=14, rvol_n=20, use_close_quality=True, use_completed_bar=True):
     """
-    Spike is still based on 5m candles.
-    If use_completed_bar=True -> stable spike between 5m boundaries (updates every 5 mins).
+    Stable spike: use_completed_bar=True -> spike is based on last completed 5m candle (updates every 5 mins).
     """
     ensure(token)
     bars = list(BARS[token])
@@ -240,18 +246,20 @@ def compute_spike_for_token(token, atr_n=14, rvol_n=20, use_close_quality=True, 
     }
 
 
-def _r(x, n=2):
-    try:
-        return round(float(x), n) if x is not None else None
-    except Exception:
+# ------------------- % CHANGE FROM MARKET OPEN (NO 5m RESET) -------------------
+def pct_from_open(token: int):
+    cur = CUR.get(token)
+    op = DAY_OPEN.get(token)
+    if not cur or not op:
         return None
+    ltp = cur["close"]
+    return ((ltp - op) / op) * 100.0
 
 
-# ------------------- SECTOR SCORE = Avg Change% from Market Open -------------------
-def compute_sector_change_pct():
+def compute_sector_change_pct_median():
     """
-    Sector score = average of (stock % change from market open) across stocks with valid open.
-    This does NOT reset every 5 mins. It only changes as LTP changes.
+    Sector score = MEDIAN of stock % change from market open.
+    Median avoids 1-2 outlier stocks dominating the sector rank.
     """
     out = {}
     for sector, syms in SECTOR_DEFINITIONS.items():
@@ -260,18 +268,16 @@ def compute_sector_change_pct():
             tok = symbol_to_token.get(s)
             if not tok:
                 continue
-            cur = CUR.get(tok)
-            op = DAY_OPEN.get(tok)
-            if not cur or not op:
-                continue
-            ltp = cur["close"]
-            vals.append(((ltp - op) / op) * 100.0)
-        out[sector] = (sum(vals) / len(vals)) if vals else 0.0
+            p = pct_from_open(tok)
+            if p is not None:
+                vals.append(p)
+
+        out[sector] = float(pd.Series(vals).median()) if vals else 0.0
     return out
 
 
 def sector_rows_sorted_by_change_pct(sector: str):
-    """Grid rows sorted by Change% from market open (descending)."""
+    """Sector stocks grid sorted by % change from market open (descending)."""
     rows = []
     for s in SECTOR_DEFINITIONS.get(sector, []):
         tok = symbol_to_token.get(s)
@@ -284,9 +290,8 @@ def sector_rows_sorted_by_change_pct(sector: str):
 
         ltp = cur["close"]
         op = DAY_OPEN.get(tok)
-
         chg = (ltp - op) if op else None
-        chg_pct = (((ltp - op) / op) * 100.0) if op else None
+        chg_pct = pct_from_open(tok)
 
         sp = compute_spike_for_token(tok, use_completed_bar=True)
 
@@ -296,8 +301,6 @@ def sector_rows_sorted_by_change_pct(sector: str):
             "Price": _r(ltp, 2),
             "Change": _r(chg, 2),
             "Change%": _r(chg_pct, 2),
-
-            # keep spike columns (optional)
             "Range/ATR": _r(sp["range_by_atr"], 2) if sp else None,
             "Spike": _r(sp["spike"], 2) if sp else None,
             "SpikeAbs": _r(sp["spike_abs"], 2) if sp else None,
@@ -306,12 +309,46 @@ def sector_rows_sorted_by_change_pct(sector: str):
     df = pd.DataFrame(rows)
     if df.empty:
         return []
-    # sort stocks by % change (descending)
     df = df.sort_values("Change%", ascending=False, na_position="last")
     return df.to_dict("records")
 
 
-# ------------------- HISTORY SEEDING (for Spike only) -------------------
+def top_bottom_spike_rows(n=10):
+    """
+    Across ALL symbols:
+    - Top N by Spike (last completed 5m)
+    - Bottom N by Spike (last completed 5m)
+    """
+    rows = []
+    for sym in ALL_SYMBOLS:
+        tok = symbol_to_token.get(sym)
+        if not tok:
+            continue
+        cur = CUR.get(tok)
+        if not cur:
+            continue
+
+        sp = compute_spike_for_token(tok, use_completed_bar=True)
+        if not sp or sp.get("spike") is None:
+            continue
+
+        rows.append({
+            "Symbol": sym,
+            "Price": _r(cur["close"], 2),
+            "Change%": _r(pct_from_open(tok), 2),
+            "Spike": _r(sp["spike"], 2),
+        })
+
+    if not rows:
+        return [], []
+
+    df = pd.DataFrame(rows)
+    topn = df.sort_values("Spike", ascending=False).head(n).to_dict("records")
+    botn = df.sort_values("Spike", ascending=True).head(n).to_dict("records")
+    return topn, botn
+
+
+# ------------------- HISTORY SEEDING (so Spike works quickly) -------------------
 def seed_history_once(days_back: int = 7, interval: str = "5minute", per_req_sleep: float = 0.35):
     global _seed_started, SEED_DONE, SEED_ERRORS
 
@@ -421,8 +458,8 @@ ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 dash_app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.CYBORG],
-    requests_pathname_prefix=BASE,
-    routes_pathname_prefix="/",
+    requests_pathname_prefix=BASE,   # browser URLs (/dash/...)
+    routes_pathname_prefix="/",      # Flask after mount strips /dash
     assets_folder=ASSETS_DIR,
     suppress_callback_exceptions=True,
 )
@@ -450,11 +487,62 @@ def top_nav(pathname: str):
 
 
 def sectors_page():
+    common_cols = [
+        {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "StockCell", "minWidth": 170},
+        {"field": "Price", "type": "rightAligned", "valueFormatter": {"function": "fmt2(params.value)"}},
+        {"field": "Change%", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtPct(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+        {"field": "Spike", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtSigned2(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+    ]
+
     return html.Div(
         [
+            dcc.Interval(id="refresh_sectors", interval=2000, n_intervals=0),
+
             html.H4("Sectors", className="page-title"),
             html.Div(id="sector-bars", className="sector-bars-wrap"),
-            html.Div("Sorted by Avg Change% from Market Open (no 5m reset).", className="hint"),
+            html.Div("Sorted by MEDIAN Change% from Market Open (no reset).", className="hint"),
+
+            html.Hr(),
+
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            html.H6("Top 10 Spike (last completed 5m)", className="mt-1"),
+                            dag.AgGrid(
+                                id="top10-spike-grid",
+                                className="ag-theme-alpine-dark grid-wrap compact-grid",
+                                columnDefs=common_cols,
+                                rowData=[],
+                                defaultColDef={"sortable": True, "filter": True, "resizable": True},
+                                dashGridOptions={"getRowId": {"function": "params.data.Symbol"}},
+                                style={"height": "38vh", "width": "100%"},
+                            ),
+                        ],
+                        md=6,
+                    ),
+                    dbc.Col(
+                        [
+                            html.H6("Bottom 10 Spike (last completed 5m)", className="mt-1"),
+                            dag.AgGrid(
+                                id="bottom10-spike-grid",
+                                className="ag-theme-alpine-dark grid-wrap compact-grid",
+                                columnDefs=common_cols,
+                                rowData=[],
+                                defaultColDef={"sortable": True, "filter": True, "resizable": True},
+                                dashGridOptions={"getRowId": {"function": "params.data.Symbol"}},
+                                style={"height": "38vh", "width": "100%"},
+                            ),
+                        ],
+                        md=6,
+                    ),
+                ],
+                className="g-2",
+            ),
         ],
         className="page-wrap",
     )
@@ -463,6 +551,8 @@ def sectors_page():
 def sector_page(sector):
     return html.Div(
         [
+            dcc.Interval(id="refresh_sector", interval=2000, n_intervals=0),
+
             dbc.Row(
                 [
                     dbc.Col(html.H4(f"{sector} Stocks", className="page-title"), width=True),
@@ -477,13 +567,8 @@ def sector_page(sector):
                 id="grid",
                 className="ag-theme-alpine-dark grid-wrap",
                 columnDefs=[
-                    {
-                        "field": "Symbol",
-                        "headerName": "Stock",
-                        "pinned": "left",
-                        "cellRenderer": "StockCell",
-                        "minWidth": 240,
-                    },
+                    {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "StockCell", "minWidth": 240},
+
                     {"field": "Price", "type": "rightAligned",
                      "valueFormatter": {"function": "fmt2(params.value)"}},
 
@@ -491,7 +576,7 @@ def sector_page(sector):
                      "valueFormatter": {"function": "fmtSigned2(params.value)"},
                      "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
 
-                    # DEFAULT SORT: Change% desc
+                    # default sort: % change from market open
                     {"field": "Change%", "type": "rightAligned",
                      "valueFormatter": {"function": "fmtPct(params.value)"},
                      "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"},
@@ -525,7 +610,6 @@ dash_app.layout = dbc.Container(
     fluid=True,
     children=[
         dcc.Location(id="url"),
-        dcc.Interval(id="refresh", interval=2000, n_intervals=0),
         dcc.Interval(id="top_refresh", interval=1000, n_intervals=0),
 
         html.Div(
@@ -615,21 +699,27 @@ def update_top_stats(_):
     )
 
 
-@dash_app.callback(Output("sector-bars", "children"), Input("refresh", "n_intervals"), Input("url", "pathname"))
-def render_sector_bars(_, pathname):
-    pathname = pathname or f"{BASE}"
-    if pathname not in (f"{BASE}", "/dash", "/dash/"):
-        return dash.no_update
-
+@dash_app.callback(
+    Output("sector-bars", "children"),
+    Input("refresh_sectors", "n_intervals"),
+)
+def render_sector_bars(_):
     with LOCK:
-        scores = compute_sector_change_pct()
+        scores = compute_sector_change_pct_median()
 
     items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     max_abs = max([abs(v) for _, v in items] + [1e-6])
 
+    # reduced histogram size
+    base_h = 10
+    scale_h = 150
+    cap_h = 150
+
     children = []
     for sector, val in items:
-        h = int(30 + 260 * (abs(val) / max_abs))
+        h = int(base_h + scale_h * (abs(val) / max_abs))
+        h = min(h, cap_h)
+
         cls = "bar-green" if val >= 0 else "bar-red"
         label = f"{val:+.2f}%"
 
@@ -650,7 +740,22 @@ def render_sector_bars(_, pathname):
     return children
 
 
-@dash_app.callback(Output("grid", "rowData"), Input("refresh", "n_intervals"), Input("url", "pathname"))
+@dash_app.callback(
+    Output("top10-spike-grid", "rowData"),
+    Output("bottom10-spike-grid", "rowData"),
+    Input("refresh_sectors", "n_intervals"),
+)
+def update_spike_leaderboards(_):
+    with LOCK:
+        top10, bot10 = top_bottom_spike_rows(n=10)
+    return top10, bot10
+
+
+@dash_app.callback(
+    Output("grid", "rowData"),
+    Input("refresh_sector", "n_intervals"),
+    Input("url", "pathname"),
+)
 def update_grid(_, pathname):
     if not pathname or not pathname.startswith(f"{BASE}sector/"):
         return dash.no_update
@@ -686,8 +791,8 @@ def health():
 def _dash_redirect():
     return RedirectResponse(url="/dash/")
 
-app.mount("/dash", WSGIMiddleware(server))
-
 @app.get("/")
 def root():
     return RedirectResponse(url="/dash/")
+
+app.mount("/dash", WSGIMiddleware(server))

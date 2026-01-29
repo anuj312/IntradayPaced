@@ -229,6 +229,7 @@ body:before{
 .sector-bars-wrap{
   display:flex;
   gap:14px;
+ 
   align-items:flex-end;
   flex-wrap:wrap;
 
@@ -243,7 +244,7 @@ body:before{
 .sector-link{ text-decoration:none; color:inherit; }
 
 .sector-bar-card{
-  width: 104px;
+  width: 90px;
   display:flex;
   flex-direction:column;
   align-items:center;
@@ -523,3 +524,4 @@ body:before{
   .stock-name{ max-width: 220px; }
   .topbar-wrap{ top: 6px; }
 }
+
