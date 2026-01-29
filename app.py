@@ -68,6 +68,11 @@ LAST_CUMVOL = {}  # token -> last seen cumulative day volume
 DAY_OPEN = {}     # token -> day open (from tick.ohlc.open)
 DAY_VOL = {}      # token -> day cumulative volume (volume_traded)
 
+# Rolling sector rotation window (N=6 => last 30 minutes)
+ROLL_N = 6
+SPIKE_WIN = {}    # token -> deque of last N spikes (TODAY only)
+SPIKE_DAY = {}    # token -> date for which SPIKE_WIN is valid
+
 # tick stats
 LAST_TICK_TS = 0.0
 LAST_TICK_DT = None
@@ -90,6 +95,11 @@ def floor_5m(dt: datetime):
 def ensure(token):
     if token not in BARS:
         BARS[token] = deque(maxlen=300)
+
+
+def ensure_spike_win(token):
+    if token not in SPIKE_WIN:
+        SPIKE_WIN[token] = deque(maxlen=ROLL_N)
 
 
 def _record_tick_batch(count: int, last_dt: datetime | None):
@@ -115,10 +125,93 @@ def _get_tps():
     return sum(c for _, c in TPS_BUCKETS) / TPS_WINDOW_SEC
 
 
+def true_range(h, l, prev_c):
+    if prev_c is None:
+        return h - l
+    return max(h - l, abs(h - prev_c), abs(l - prev_c))
+
+
+def _spike_from_hist_and_cur(hist_bars, cur_bar, atr_n=14, rvol_n=20, use_close_quality=True):
+    """Compute spike for a specific completed bar given its history bars (all completed)."""
+    if len(hist_bars) < max(atr_n + 1, rvol_n):
+        return None
+
+    # ATR on history
+    last_completed = hist_bars[-(atr_n + 1):]
+    trs = []
+    prev_close = None
+    for b in last_completed:
+        trs.append(true_range(b["high"], b["low"], prev_close))
+        prev_close = b["close"]
+    atr = sum(trs[-atr_n:]) / atr_n if atr_n else None
+    if not atr or atr == 0:
+        return None
+
+    # RVOL baseline from history
+    vols = [b["vol_5m"] for b in hist_bars[-rvol_n:]]
+    avg_vol = (sum(vols) / len(vols)) if vols else None
+    if not avg_vol or avg_vol == 0:
+        return None
+    rvol = cur_bar["vol_5m"] / avg_vol
+
+    rng = cur_bar["high"] - cur_bar["low"]
+    range_by_atr = rng / atr
+
+    sign = 1 if cur_bar["close"] >= cur_bar["open"] else -1
+
+    cq = 1.0
+    if use_close_quality and rng > 0:
+        cq_raw = ((cur_bar["close"] - cur_bar["low"]) / rng) if sign > 0 else ((cur_bar["high"] - cur_bar["close"]) / rng)
+        cq_raw = max(0.0, min(1.0, cq_raw))
+        cq = 0.5 + 0.5 * cq_raw
+
+    spike = sign * (rvol * range_by_atr) * cq
+    return {
+        "atr": atr,
+        "rvol": rvol,
+        "range": rng,
+        "range_by_atr": range_by_atr,
+        "spike": spike,
+        "spike_abs": abs(spike),
+    }
+
+
+def compute_spike_for_token(
+    token,
+    atr_n=14,
+    rvol_n=20,
+    use_close_quality=True,
+    use_completed_bar=True,  # stable: last completed 5m candle
+):
+    """
+    If use_completed_bar=True -> compute Spike on last COMPLETED 5m candle (BARS[-1]).
+    This keeps per-stock spike stable between 5m boundaries; it updates every 5 minutes.
+    """
+    ensure(token)
+    bars = list(BARS[token])
+
+    if use_completed_bar:
+        if len(bars) < max(atr_n + 2, rvol_n + 1):
+            return None
+        cur = bars[-1]
+        hist = bars[:-1]
+        return _spike_from_hist_and_cur(hist, cur, atr_n=atr_n, rvol_n=rvol_n, use_close_quality=use_close_quality)
+
+    # (Optional) forming candle mode
+    cur = CUR.get(token)
+    if cur is None:
+        return None
+    if len(bars) < max(atr_n + 1, rvol_n):
+        return None
+    hist = bars
+    return _spike_from_hist_and_cur(hist, cur, atr_n=atr_n, rvol_n=rvol_n, use_close_quality=use_close_quality)
+
+
 def update_from_tick(tick: dict):
-    """Update day values + build 5m candle from ticks."""
+    """Update day values + build 5m candle from ticks. On each candle close, update rolling spike window."""
     token = tick["instrument_token"]
     ensure(token)
+    ensure_spike_win(token)
 
     ts = tick.get("exchange_timestamp") or datetime.now()
     ltp = tick.get("last_price")
@@ -136,7 +229,7 @@ def update_from_tick(tick: dict):
     last_c = LAST_CUMVOL.get(token)
     LAST_CUMVOL[token] = cumvol
 
-    # IMPORTANT: handle new-day reset of cumulative volume
+    # handle new-day reset of cumulative volume
     if last_c is not None and cumvol < last_c:
         vol_delta = cumvol
     else:
@@ -151,10 +244,26 @@ def update_from_tick(tick: dict):
 
     c = CUR[token]
     if bucket != c["bucket"]:
-        BARS[token].append({
+        # finalize previous candle
+        finished = {
             "bucket": c["bucket"], "open": c["open"], "high": c["high"], "low": c["low"],
             "close": c["close"], "vol_5m": c["vol_5m"]
-        })
+        }
+        BARS[token].append(finished)
+
+        # ---- Rolling N=6 spikes, TODAY only (sector rotation signal) ----
+        finished_day = finished["bucket"].date()
+        if SPIKE_DAY.get(token) != finished_day:
+            SPIKE_WIN[token].clear()
+            SPIKE_DAY[token] = finished_day
+
+        # spike for last completed bar (stable, updates every 5 mins)
+        sp = compute_spike_for_token(token, use_completed_bar=True)
+        if sp and sp.get("spike") is not None:
+            SPIKE_WIN[token].append(sp["spike"])
+        # ---------------------------------------------------------------
+
+        # start new current candle
         CUR[token] = {
             "bucket": bucket, "open": ltp, "high": ltp, "low": ltp,
             "close": ltp, "vol_5m": vol_delta
@@ -163,7 +272,7 @@ def update_from_tick(tick: dict):
 
     # same bucket
     if c.get("synthetic"):
-        # replace the synthetic candle open with first real tick
+        # replace synthetic candle open with first real tick
         c["open"] = ltp
         c["synthetic"] = False
 
@@ -173,87 +282,11 @@ def update_from_tick(tick: dict):
     c["vol_5m"] += vol_delta
 
 
-def true_range(h, l, prev_c):
-    if prev_c is None:
-        return h - l
-    return max(h - l, abs(h - prev_c), abs(l - prev_c))
-
-
-def compute_spike_for_token(
-    token,
-    atr_n=14,
-    rvol_n=20,
-    use_close_quality=True,
-    use_completed_bar=True,  # Option A: use last completed 5m candle (stable within each 5m)
-):
-    """
-    Spike (signed) = sign(C-O) * RVOL * (Range/ATR) * close_quality_factor
-    close_quality_factor in [0.5..1.0]
-
-    If use_completed_bar=True:
-      - Spike is computed on the last COMPLETED 5m candle (BARS[-1])
-      - So it won't "reset" at the start of each new 5m candle.
-    """
-    ensure(token)
-    bars = list(BARS[token])
-
-    if use_completed_bar:
-        # Score last completed bar. Use earlier bars as history.
-        if len(bars) < max(atr_n + 2, rvol_n + 1):
-            return None
-        cur = bars[-1]
-        hist = bars[:-1]
-    else:
-        # Score current forming bar (original behavior)
-        cur = CUR.get(token)
-        if cur is None:
-            return None
-        if len(bars) < max(atr_n + 1, rvol_n):
-            return None
-        hist = bars
-
-    # ATR from history (need atr_n + 1 bars to incorporate prev_close)
-    last_completed = hist[-(atr_n + 1):]
-    trs = []
-    prev_close = None
-    for b in last_completed:
-        trs.append(true_range(b["high"], b["low"], prev_close))
-        prev_close = b["close"]
-
-    atr = sum(trs[-atr_n:]) / atr_n if atr_n else None
-    if not atr or atr == 0:
-        return None
-
-    # RVOL baseline from history (exclude the bar being scored when use_completed_bar=True)
-    vols = [b["vol_5m"] for b in hist[-rvol_n:]]
-    avg_vol = (sum(vols) / len(vols)) if vols else None
-    if not avg_vol or avg_vol == 0:
-        return None
-    rvol = cur["vol_5m"] / avg_vol
-
-    rng = cur["high"] - cur["low"]
-    range_by_atr = rng / atr
-
-    sign = 1 if cur["close"] >= cur["open"] else -1
-
-    cq = 1.0
-    if use_close_quality and rng > 0:
-        cq_raw = ((cur["close"] - cur["low"]) / rng) if sign > 0 else ((cur["high"] - cur["close"]) / rng)
-        cq_raw = max(0.0, min(1.0, cq_raw))
-        cq = 0.5 + 0.5 * cq_raw
-
-    spike = sign * (rvol * range_by_atr) * cq
-    return {
-        "atr": atr,
-        "rvol": rvol,
-        "range": rng,
-        "range_by_atr": range_by_atr,
-        "spike": spike,
-        "spike_abs": abs(spike),
-    }
-
-
 def compute_sector_strength_signed():
+    """
+    Sector score = average across stocks of per-stock rolling avg spike over last N completed 5m candles.
+    Updates every 5 minutes (when a candle completes).
+    """
     out = {}
     for sector, syms in SECTOR_DEFINITIONS.items():
         vals = []
@@ -261,15 +294,15 @@ def compute_sector_strength_signed():
             tok = symbol_to_token.get(s)
             if not tok:
                 continue
-            # Option A: stable spike (last completed candle)
-            sp = compute_spike_for_token(tok, use_completed_bar=True)
-            if sp and sp["spike"] is not None:
-                vals.append(sp["spike"])
+            w = SPIKE_WIN.get(tok)
+            if w and len(w) > 0:
+                vals.append(sum(w) / len(w))
         out[sector] = (sum(vals) / len(vals)) if vals else 0.0
     return out
 
 
 def sector_rows_sorted_both_sides(sector: str):
+    """Grid rows: show stable per-stock spike from last completed 5m candle."""
     rows = []
     for s in SECTOR_DEFINITIONS.get(sector, []):
         tok = symbol_to_token.get(s)
@@ -286,7 +319,6 @@ def sector_rows_sorted_both_sides(sector: str):
         chg = (ltp - day_open) if day_open else None
         chg_pct = ((ltp - day_open) / day_open * 100.0) if day_open else None
 
-        # Option A: stable spike (last completed candle)
         sp = compute_spike_for_token(tok, use_completed_bar=True)
 
         rows.append({
@@ -324,6 +356,8 @@ def seed_history_once(days_back: int = 7, interval: str = "5minute", per_req_sle
         SEED_PROGRESS["total"] = total
         SEED_PROGRESS["done"] = 0
 
+        today = datetime.now().date()
+
         for i, tok in enumerate(TOKENS, start=1):
             try:
                 candles = kite.historical_data(
@@ -340,6 +374,8 @@ def seed_history_once(days_back: int = 7, interval: str = "5minute", per_req_sle
 
             with LOCK:
                 ensure(tok)
+                ensure_spike_win(tok)
+
                 BARS[tok].clear()
 
                 for c in candles[-300:]:
@@ -353,7 +389,7 @@ def seed_history_once(days_back: int = 7, interval: str = "5minute", per_req_sle
                         "vol_5m": c.get("volume", 0) or 0,
                     })
 
-                # keep synthetic CUR (not required for Option A spike, but still useful for showing Price before ticks)
+                # synthetic current candle (useful for showing Price before first live tick)
                 if candles and tok not in CUR:
                     last_close = candles[-1]["close"]
                     CUR[tok] = {
@@ -365,6 +401,20 @@ def seed_history_once(days_back: int = 7, interval: str = "5minute", per_req_sle
                         "vol_5m": 0,
                         "synthetic": True,
                     }
+
+                # Prefill rolling window from today's completed historical 5m bars (if app starts mid-session)
+                SPIKE_WIN[tok].clear()
+                SPIKE_DAY[tok] = today
+
+                bars_list = list(BARS[tok])
+                # collect indices of bars that belong to TODAY
+                today_idxs = [idx for idx, b in enumerate(bars_list) if b["bucket"].date() == today]
+                for idx in today_idxs[-ROLL_N:]:
+                    hist = bars_list[:idx]
+                    cur = bars_list[idx]
+                    sp = _spike_from_hist_and_cur(hist, cur)
+                    if sp and sp.get("spike") is not None:
+                        SPIKE_WIN[tok].append(sp["spike"])
 
             SEED_PROGRESS["done"] = i
             time.sleep(per_req_sleep)
@@ -451,6 +501,7 @@ def sectors_page():
             html.H4("Sectors", className="page-title"),
             html.Div(id="sector-bars", className="sector-bars-wrap"),
             html.Div("Click a sector to open stocks (sorted by SpikeAbs).", className="hint"),
+            html.Div(f"Sector strength = rolling {ROLL_N}×5m (last {ROLL_N*5} min) avg Spike.", className="hint"),
         ],
         className="page-wrap",
     )
@@ -676,6 +727,7 @@ def health():
             "tps": round(_get_tps(), 3),
             "total_ticks": TOTAL_TICKS,
             "last_tick_time": (LAST_TICK_DT.isoformat() if LAST_TICK_DT else None),
+            "roll_n": ROLL_N,
         }
 
 @app.get("/dash")
