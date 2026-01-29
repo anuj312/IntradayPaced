@@ -465,31 +465,31 @@ body:before{
 /* =========================
    SPIKE CHIP (Premium)
    ========================= */
+/* Smaller spike / spike abs chips */
 .spike-chip{
   display:inline-flex;
+  align-items:center;
   justify-content:flex-end;
-  min-width: 92px;
 
-  padding: 8px 12px;
-  border-radius: 14px;
+  min-width: 70px;          /* was 92px */
+  padding: 5px 8px;         /* was 8px 12px */
+  border-radius: 12px;      /* was 14px */
 
-  font-weight: 950;
-  letter-spacing: 0.2px;
+  font-size: 11px;          /* smaller text */
+  font-weight: 800;         /* slightly less heavy */
+  letter-spacing: 0.1px;
 
-  position: relative;
+  line-height: 1;
+  white-space: nowrap;      /* keep in one line */
+  font-variant-numeric: tabular-nums;
+
+  max-width: 100%;
   overflow: hidden;
+  text-overflow: ellipsis;  /* if still too long, it won't overflow */
 }
 
-/* animated shimmer inside chip */
-.spike-chip:after{
-  content:"";
-  position:absolute;
-  inset:-60% -80%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
-  transform: rotate(18deg);
-  animation: chipshine 3.8s linear infinite;
-  opacity: 0.55;
-}
+/* Optional: tone down shimmer so it doesn't look “busy” on small chips */
+.spike-chip:after{ opacity: 0.35; }
 @keyframes chipshine{
   0%{ transform: translateX(-45%) rotate(18deg); }
   100%{ transform: translateX(45%) rotate(18deg); }
