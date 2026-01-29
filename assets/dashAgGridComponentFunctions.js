@@ -52,7 +52,9 @@ dagcomponentfuncs.StockCell = function (params) {
   // TradingView symbol mapping
   const tvSymbol = "NSE:" + sym; // change to "BSE:" if needed
   const tvUrl =
-    "https://www.tradingview.com/chart/?symbol=" + encodeURIComponent(tvSymbol);
+  "https://www.tradingview.com/chart/?symbol=" +
+  encodeURIComponent(tvSymbol) +
+  "&interval=5";
 
   return React.createElement(
     "div",
