@@ -14,7 +14,6 @@ import dash_bootstrap_components as dbc
 import dash_ag_grid as dag
 
 from kiteconnect import KiteConnect, KiteTicker
-from zoneinfo import ZoneInfo
 
 
 # ------------------- MOUNT PATH -------------------
@@ -68,10 +67,6 @@ LAST_CUMVOL = {}  # token -> last seen cumulative day volume
 
 DAY_OPEN = {}     # token -> day open (market open) from tick.ohlc.open
 DAY_VOL = {}      # token -> day cumulative volume
-
-# "Update UI 1 min before close" snapshot (freeze candle at minute-4)
-PREVIEW_MINUTE = 4
-SPIKE_SNAPSHOT = {}  # token -> snapshot candle {bucket,open,high,low,close,vol_5m}
 
 # tick stats
 LAST_TICK_TS = 0.0
@@ -127,52 +122,6 @@ def _get_tps():
     return sum(c for _, c in TPS_BUCKETS) / TPS_WINDOW_SEC
 
 
-def _take_snapshot_if_due(token: int, now_dt: datetime):
-    """
-    Freeze current 5m candle at minute-4 of the bucket.
-    Example: bucket 09:15 -> snapshot at 09:19:00
-    """
-    c = CUR.get(token)
-    if not c:
-        return
-
-    b = c["bucket"]
-    snap_time = b + timedelta(minutes=PREVIEW_MINUTE)
-    if now_dt < snap_time:
-        return
-
-    s = SPIKE_SNAPSHOT.get(token)
-    if s and s.get("bucket") == b:
-        return  # already snapped for this bucket
-
-    SPIKE_SNAPSHOT[token] = {
-        "bucket": b,
-        "open": c["open"],
-        "high": c["high"],
-        "low": c["low"],
-        "close": c["close"],
-        "vol_5m": c["vol_5m"],
-    }
-
-
-_snapshot_started = False
-def start_snapshot_timer_once():
-    global _snapshot_started
-    if _snapshot_started:
-        return
-    _snapshot_started = True
-
-    def _run():
-        while True:
-            now_dt = datetime.now()
-            with LOCK:
-                for tok in list(CUR.keys()):
-                    _take_snapshot_if_due(tok, now_dt)
-            time.sleep(1)
-
-    threading.Thread(target=_run, daemon=True).start()
-
-
 def update_from_tick(tick: dict):
     """Update DAY_OPEN/DAY_VOL + build 5m candles for Spike."""
     token = tick["instrument_token"]
@@ -210,13 +159,10 @@ def update_from_tick(tick: dict):
 
     c = CUR[token]
     if bucket != c["bucket"]:
-        # finalize previous 5m candle
         BARS[token].append({
             "bucket": c["bucket"], "open": c["open"], "high": c["high"], "low": c["low"],
             "close": c["close"], "vol_5m": c["vol_5m"]
         })
-
-        # start new 5m candle
         CUR[token] = {
             "bucket": bucket, "open": ltp, "high": ltp, "low": ltp,
             "close": ltp, "vol_5m": vol_delta
@@ -242,9 +188,7 @@ def true_range(h, l, prev_c):
 
 def compute_spike_for_token(token, atr_n=14, rvol_n=20, use_close_quality=True, use_completed_bar=True):
     """
-    Base spike:
-      - use_completed_bar=True -> last completed 5m candle (updates every 5 mins)
-      - use_completed_bar=False -> current forming 5m candle
+    Stable spike: use_completed_bar=True -> spike is based on last completed 5m candle (updates every 5 mins).
     """
     ensure(token)
     bars = list(BARS[token])
@@ -302,76 +246,7 @@ def compute_spike_for_token(token, atr_n=14, rvol_n=20, use_close_quality=True, 
     }
 
 
-def compute_spike_for_token_ui(token, atr_n=14, rvol_n=20, use_close_quality=True):
-    """
-    UI Spike logic (your request):
-      - For the CURRENT 5m candle: freeze a snapshot at minute-4 (1 minute before close).
-        Use that snapshot for spike so UI updates at 9:19, 9:24, ...
-      - Otherwise show last completed 5m candle spike (stable).
-    """
-    ensure(token)
-    bars = list(BARS[token])
-    if not bars:
-        return None
-
-    cur_bucket = CUR.get(token, {}).get("bucket")
-    snap = SPIKE_SNAPSHOT.get(token)
-    use_snap = bool(cur_bucket and snap and snap.get("bucket") == cur_bucket)
-
-    if use_snap:
-        # history = all completed bars, cur = frozen snapshot (partial candle at min-4)
-        if len(bars) < max(atr_n + 1, rvol_n):
-            return None
-        hist = bars
-        cur = snap
-    else:
-        # history excludes last bar, cur = last completed bar
-        if len(bars) < max(atr_n + 2, rvol_n + 1):
-            return None
-        hist = bars[:-1]
-        cur = bars[-1]
-
-    # ATR
-    last_completed = hist[-(atr_n + 1):]
-    trs = []
-    prev_close = None
-    for b in last_completed:
-        trs.append(true_range(b["high"], b["low"], prev_close))
-        prev_close = b["close"]
-    atr = sum(trs[-atr_n:]) / atr_n if atr_n else None
-    if not atr or atr == 0:
-        return None
-
-    # RVOL baseline
-    vols = [b["vol_5m"] for b in hist[-rvol_n:]]
-    avg_vol = (sum(vols) / len(vols)) if vols else None
-    if not avg_vol or avg_vol == 0:
-        return None
-    rvol = cur["vol_5m"] / avg_vol
-
-    rng = cur["high"] - cur["low"]
-    range_by_atr = rng / atr
-
-    sign = 1 if cur["close"] >= cur["open"] else -1
-
-    cq = 1.0
-    if use_close_quality and rng > 0:
-        cq_raw = ((cur["close"] - cur["low"]) / rng) if sign > 0 else ((cur["high"] - cur["close"]) / rng)
-        cq_raw = max(0.0, min(1.0, cq_raw))
-        cq = 0.5 + 0.5 * cq_raw
-
-    spike = sign * (rvol * range_by_atr) * cq
-    return {
-        "atr": atr,
-        "rvol": rvol,
-        "range": rng,
-        "range_by_atr": range_by_atr,
-        "spike": spike,
-        "spike_abs": abs(spike),
-    }
-
-
-# ------------------- % CHANGE FROM MARKET OPEN (NO RESET) -------------------
+# ------------------- % CHANGE FROM MARKET OPEN (NO 5m RESET) -------------------
 def pct_from_open(token: int):
     cur = CUR.get(token)
     op = DAY_OPEN.get(token)
@@ -384,6 +259,7 @@ def pct_from_open(token: int):
 def compute_sector_change_pct_median():
     """
     Sector score = MEDIAN of stock % change from market open.
+    Median avoids 1-2 outlier stocks dominating the sector rank.
     """
     out = {}
     for sector, syms in SECTOR_DEFINITIONS.items():
@@ -417,7 +293,7 @@ def sector_rows_sorted_by_change_pct(sector: str):
         chg = (ltp - op) if op else None
         chg_pct = pct_from_open(tok)
 
-        sp = compute_spike_for_token_ui(tok)  # <-- UI spike (minute-4 snapshot or last completed)
+        sp = compute_spike_for_token(tok, use_completed_bar=True)
 
         rows.append({
             "Symbol": s,
@@ -440,8 +316,8 @@ def sector_rows_sorted_by_change_pct(sector: str):
 def top_bottom_spike_rows(n=10):
     """
     Across ALL symbols:
-    - Top N by UI Spike (5m snapshot at minute-4, else last completed)
-    - Bottom N by UI Spike
+    - Top N by Spike (last completed 5m)
+    - Bottom N by Spike (last completed 5m)
     """
     rows = []
     for sym in ALL_SYMBOLS:
@@ -452,12 +328,13 @@ def top_bottom_spike_rows(n=10):
         if not cur:
             continue
 
-        sp = compute_spike_for_token_ui(tok)
+        sp = compute_spike_for_token(tok, use_completed_bar=True)
         if not sp or sp.get("spike") is None:
             continue
 
         rows.append({
             "Symbol": sym,
+            "Price": _r(cur["close"], 2),
             "Change%": _r(pct_from_open(tok), 2),
             "Spike": _r(sp["spike"], 2),
         })
@@ -611,17 +488,15 @@ def top_nav(pathname: str):
 
 def sectors_page():
     common_cols = [
-    {"field": "Symbol", "headerName": "Stock", "pinned": "left",
-     "cellRenderer": "StockCell", "minWidth": 170},
-
-    {"field": "Change%", "type": "rightAligned",
-     "valueFormatter": {"function": "fmtPct(params.value)"},
-     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
-
-    {"field": "Spike", "type": "rightAligned",
-     "valueFormatter": {"function": "fmtSigned2(params.value)"},
-     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
-]
+        {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "StockCell", "minWidth": 170},
+        {"field": "Price", "type": "rightAligned", "valueFormatter": {"function": "fmt2(params.value)"}},
+        {"field": "Change%", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtPct(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+        {"field": "Spike", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtSigned2(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+    ]
 
     return html.Div(
         [
@@ -637,7 +512,7 @@ def sectors_page():
                 [
                     dbc.Col(
                         [
-                            html.H6("Top 10 Spike (5m, snapshot @ min-4)", className="mt-1"),
+                            html.H6("Top 10 Spike (last completed 5m)", className="mt-1"),
                             dag.AgGrid(
                                 id="top10-spike-grid",
                                 className="ag-theme-alpine-dark grid-wrap compact-grid",
@@ -652,7 +527,7 @@ def sectors_page():
                     ),
                     dbc.Col(
                         [
-                            html.H6("Bottom 10 Spike (5m, snapshot @ min-4)", className="mt-1"),
+                            html.H6("Bottom 10 Spike (last completed 5m)", className="mt-1"),
                             dag.AgGrid(
                                 id="bottom10-spike-grid",
                                 className="ag-theme-alpine-dark grid-wrap compact-grid",
@@ -701,6 +576,7 @@ def sector_page(sector):
                      "valueFormatter": {"function": "fmtSigned2(params.value)"},
                      "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
 
+                    # default sort: % change from market open
                     {"field": "Change%", "type": "rightAligned",
                      "valueFormatter": {"function": "fmtPct(params.value)"},
                      "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"},
@@ -782,7 +658,7 @@ def route(pathname):
 
 @dash_app.callback(Output("top-stats", "children"), Input("top_refresh", "n_intervals"))
 def update_top_stats(_):
-    updated_str = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
+    updated_str = datetime.now().strftime("%H:%M:%S")
 
     with LOCK:
         if not SEED_DONE:
@@ -889,7 +765,6 @@ app = FastAPI(title="Stocker")
 def _startup():
     seed_history_once(days_back=7, interval="5minute", per_req_sleep=0.35)
     start_ticker_once()
-    start_snapshot_timer_once()  # <-- snapshot at minute-4 so UI updates 1 min before close
 
 @app.get("/health")
 def health():
