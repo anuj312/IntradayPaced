@@ -1026,3 +1026,63 @@ box-shadow:
 0 0 20px rgba(34,211,238,0.10);
 transform: translateY(-1px);
 }
+
+/* =========================================================
+   TOP BAR: Username + Plan pills (premium)
+   Assumes only 2 pills now: 1) username 2) plan
+   ========================================================= */
+
+/* Username pill (1st) */
+.top-tabs .nav-item:nth-child(1) .top-tab{
+  background: linear-gradient(135deg, rgba(34,211,238,0.22), rgba(59,130,246,0.16)) !important;
+  border-color: rgba(34,211,238,0.26) !important;
+  color: rgba(255,255,255,0.94) !important;
+  box-shadow:
+    0 18px 46px rgba(34,211,238,0.10),
+    inset 0 1px 0 rgba(255,255,255,0.08) !important;
+  padding: 9px 18px !important;
+}
+
+/* Plan pill (2nd) */
+.top-tabs .nav-item:nth-child(2) .top-tab{
+  background: linear-gradient(135deg, rgba(168,85,247,0.24), rgba(236,72,153,0.14)) !important;
+  border-color: rgba(168,85,247,0.26) !important;
+  color: rgba(255,255,255,0.92) !important;
+  box-shadow:
+    0 18px 46px rgba(168,85,247,0.10),
+    inset 0 1px 0 rgba(255,255,255,0.08) !important;
+  padding: 9px 18px !important;
+}
+
+/* Slight hover polish */
+.top-tabs .nav-item:nth-child(1) .top-tab:hover,
+.top-tabs .nav-item:nth-child(2) .top-tab:hover{
+  transform: translateY(-2px);
+  border-color: rgba(255,255,255,0.22) !important;
+  box-shadow: 0 22px 60px rgba(0,0,0,0.45) !important;
+}
+
+
+/* =========================================================
+   TOP RIGHT: Logout button (stat chip)
+   Your Logout is an <a class="stat-chip"> inside .top-stats-wrap
+   ========================================================= */
+.top-stats-wrap a.stat-chip{
+  background: linear-gradient(135deg, rgba(255,81,102,0.22), rgba(236,72,153,0.14)) !important;
+  border-color: rgba(255,81,102,0.26) !important;
+  color: rgba(255,255,255,0.95) !important;
+  font-weight: 950 !important;
+  letter-spacing: 0.2px;
+  box-shadow:
+    0 16px 44px rgba(255,81,102,0.10),
+    inset 0 1px 0 rgba(255,255,255,0.08) !important;
+}
+
+.top-stats-wrap a.stat-chip:hover{
+  transform: translateY(-1px);
+  border-color: rgba(255,81,102,0.38) !important;
+  box-shadow:
+    0 22px 56px rgba(255,81,102,0.14),
+    0 0 26px rgba(255,81,102,0.10) !important;
+  text-decoration: none !important;
+}
