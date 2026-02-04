@@ -1,6 +1,7 @@
 // assets/themeSync.js
 (function () {
-  function syncBodyClassFromRoot(root) {
+  function sync() {
+    var root = document.getElementById("theme-root");
     if (!root) return;
 
     document.body.classList.remove("theme-dark", "theme-light");
@@ -12,30 +13,20 @@
     }
   }
 
-  function attachWhenReady() {
+  function init() {
+    sync();
     var root = document.getElementById("theme-root");
-    if (!root) return false;
+    if (!root) return;
 
-    // Initial sync
-    syncBodyClassFromRoot(root);
-
-    // Re-sync whenever Dash changes className
-    new MutationObserver(function () {
-      syncBodyClassFromRoot(root);
-    }).observe(root, { attributes: true, attributeFilter: ["class"] });
-
-    return true;
+    new MutationObserver(sync).observe(root, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
   }
 
-  // Dash mounts #theme-root after load; keep retrying briefly
-  var tries = 0;
-  var t = setInterval(function () {
-    tries += 1;
-    if (attachWhenReady()) {
-      clearInterval(t);
-    } else if (tries > 100) {
-      // ~20 seconds (100 * 200ms)
-      clearInterval(t);
-    }
-  }, 200);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
 })();
