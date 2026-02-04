@@ -29,7 +29,7 @@ from firebase_admin import credentials, auth as fb_auth, firestore
 
 
 # ------------------- MOUNT PATH -------------------
-BASE = "/dash/"  # Browser URL: http://host:port/dash/
+BASE = "/dash/"  # Browser URL: https://host/dash/
 
 
 # ------------------- FIREBASE (Web config used on /login) -------------------
@@ -50,15 +50,12 @@ COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in ("1", "true", "ye
 # ------------------- FIREBASE ADMIN INIT -------------------
 def init_firebase_admin():
     """
-    Initializes Firebase Admin exactly once.
-
     Priority:
       1) FIREBASE_SERVICE_ACCOUNT_B64  (recommended on Render)
       2) FIREBASE_SERVICE_ACCOUNT_JSON (raw JSON string)
-      3) FIREBASE_SERVICE_ACCOUNT_PATH (path to an existing json file)
+      3) FIREBASE_SERVICE_ACCOUNT_PATH (path to existing JSON on server)
 
-    NOTE: We do NOT default to "service.json" because that file won't exist on Render
-    unless you explicitly ship it (not recommended).
+    IMPORTANT: we do NOT default to 'service.json' to avoid Render FileNotFoundError.
     """
     if firebase_admin._apps:
         return
@@ -67,7 +64,13 @@ def init_firebase_admin():
     raw = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
     path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "").strip()
 
-    cred = None
+    # Helpful to confirm on Render logs
+    print(
+        "Firebase cred env check:",
+        "B64?", bool(b64), "len=", len(b64),
+        "| JSON?", bool(raw),
+        "| PATH?", bool(path),
+    )
 
     if b64:
         try:
@@ -86,17 +89,13 @@ def init_firebase_admin():
     elif path:
         p = Path(path)
         if not p.exists():
-            raise RuntimeError(
-                f"FIREBASE_SERVICE_ACCOUNT_PATH was set to '{path}' but file does not exist."
-            )
+            raise RuntimeError(f"FIREBASE_SERVICE_ACCOUNT_PATH='{path}' but file not found.")
         cred = credentials.Certificate(str(p))
 
     else:
         raise RuntimeError(
-            "Missing Firebase admin credentials. Set one of:\n"
-            "  - FIREBASE_SERVICE_ACCOUNT_B64 (recommended)\n"
-            "  - FIREBASE_SERVICE_ACCOUNT_JSON\n"
-            "  - FIREBASE_SERVICE_ACCOUNT_PATH (must exist on server)\n"
+            "Missing Firebase admin credentials. Set FIREBASE_SERVICE_ACCOUNT_B64 (recommended) "
+            "or FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_PATH."
         )
 
     firebase_admin.initialize_app(cred)
@@ -177,8 +176,6 @@ def activate_subscription(uid: str, plan: str, decoded_user: Optional[dict] = No
     """
     Writes/updates:
       subscriptions/{uid}
-
-    Stores user_name and user_email so Firebase console shows who purchased.
     """
     if not uid:
         raise ValueError("uid is required")
@@ -522,7 +519,7 @@ def sector_rows_sorted_by_rfactor(sector: str):
     return df.to_dict("records")
 
 
-# ------------------- MARKET STATUS (LIVE/CLOSED) -------------------
+# ------------------- MARKET STATUS (PREOPEN/OPEN/CLOSED) -------------------
 IST = ZoneInfo("Asia/Kolkata")
 
 def market_status() -> str:
@@ -573,7 +570,6 @@ def start_ticker_once():
         def on_error(ws, code, reason):
             print("WS ERROR:", code, reason)
 
-        # (optional but useful)
         def on_reconnect(ws, attempts):
             print("WS RECONNECT attempt:", attempts)
 
@@ -720,18 +716,25 @@ def subscription_overlay(uname: str):
 
 
 def top_nav(uname: str, plan_text: str):
-    state = market_live_closed()
+    state = market_status()
 
     def pill(text: str, kind: str):
         cls = "nav-link top-tab"
         style = {"cursor": "default"}
 
-        if kind == "live":
+        if kind == "open":
             style |= {
                 "background": "linear-gradient(90deg, rgba(51,255,139,0.22), rgba(51,255,139,0.10))",
                 "borderColor": "rgba(51,255,139,0.30)",
                 "color": "rgba(51,255,139,0.95)",
                 "boxShadow": "0 18px 44px rgba(51,255,139,0.10)",
+            }
+        elif kind == "preopen":
+            style |= {
+                "background": "linear-gradient(90deg, rgba(250,204,21,0.22), rgba(250,204,21,0.10))",
+                "borderColor": "rgba(250,204,21,0.30)",
+                "color": "rgba(250,204,21,0.95)",
+                "boxShadow": "0 18px 44px rgba(250,204,21,0.10)",
             }
         elif kind == "closed":
             style |= {
@@ -750,9 +753,16 @@ def top_nav(uname: str, plan_text: str):
 
         return dbc.NavItem(html.Div(text, className=cls, style=style))
 
+    if state == "OPEN":
+        state_kind = "open"
+    elif state == "PREOPEN":
+        state_kind = "preopen"
+    else:
+        state_kind = "closed"
+
     return dbc.Nav(
         [
-            pill(state, "live" if state == "LIVE" else "closed"),
+            pill(state, state_kind),
             pill(uname, "user"),
             pill(plan_text, "plan"),
         ],
@@ -953,7 +963,6 @@ def update_top_stats(_):
         d_done_n = DAILY_SEED_PROGRESS.get("done", 0)
         d_total = DAILY_SEED_PROGRESS.get("total", 0)
 
-    # No username/plan here (no duplication)
     chips = [
         dbc.Badge("Offline" if offline else "Live",
                   color=("danger" if offline else "success"),
@@ -1184,10 +1193,6 @@ def logout():
 
 @app.get("/subscribe/activate")
 def subscribe_activate(request: Request, plan: str = "6m"):
-    """
-    DEMO activation endpoint.
-    Replace with real payment verification before calling activate_subscription().
-    """
     decoded = verify_session_cookie_from_headers(Headers(request.headers))
     if not decoded:
         return RedirectResponse(url="/login?next=/dash/", status_code=307)

@@ -29,7 +29,7 @@ window.fmtInt = function (v) {
 };
 
 // --------------------
-// Spike chip renderer (still used in sector drilldown grid)
+// Spike chip renderer
 // --------------------
 dagcomponentfuncs.SpikeChip = function (params) {
   const v = params.value;
@@ -43,8 +43,7 @@ dagcomponentfuncs.SpikeChip = function (params) {
 };
 
 // --------------------
-// OPTIONAL: RFactor chip renderer (not required)
-// If you want to use it: set columnDefs cellRenderer: "RFactorChip"
+// OPTIONAL: RFactor chip renderer
 // --------------------
 dagcomponentfuncs.RFactorChip = function (params) {
   const v = params.value;
@@ -65,14 +64,15 @@ dagcomponentfuncs.RFactorChip = function (params) {
     border: "1px solid " + bd,
     background: bg,
     fontWeight: 900,
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono','Courier New', monospace",
+    fontFamily:
+      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono','Courier New', monospace",
   };
 
   return React.createElement("span", { style }, n.toFixed(2));
 };
 
 // --------------------
-// Symbol-only cell renderer (TradingView link, NO company name)
+// Symbol-only cell renderer (TradingView link)
 // --------------------
 dagcomponentfuncs.SymbolCell = function (params) {
   const sym = params.value || "";
@@ -89,22 +89,20 @@ dagcomponentfuncs.SymbolCell = function (params) {
       target: "_blank",
       rel: "noopener noreferrer",
       className: "stock-sym",
-      onClick: function (e) {
-        e.stopPropagation();
-      },
+      onClick: function (e) { e.stopPropagation(); },
     },
     sym
   );
 };
 
 // --------------------
-// Stock cell renderer (opens TradingView chart in NEW TAB)
+// Stock cell renderer (symbol + company, TradingView new tab)
 // --------------------
 dagcomponentfuncs.StockCell = function (params) {
   const sym = params.value || "";
   const name = (params.data && params.data.Company) ? params.data.Company : "";
 
-  const tvSymbol = "NSE:" + sym; // change to "BSE:" if needed
+  const tvSymbol = "NSE:" + sym;
   const tvUrl =
     "https://www.tradingview.com/chart/?symbol=" +
     encodeURIComponent(tvSymbol) +
