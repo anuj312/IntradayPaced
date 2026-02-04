@@ -64,7 +64,6 @@ def init_firebase_admin():
     raw = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
     path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "").strip()
 
-    # Helpful to confirm on Render logs
     print(
         "Firebase cred env check:",
         "B64?", bool(b64), "len=", len(b64),
@@ -145,9 +144,6 @@ PLAN_6M_DAYS = int(os.getenv("PLAN_6M_DAYS", "183"))  # ~6 months
 
 
 def get_subscription(uid: str) -> Dict[str, Any]:
-    """
-    Firestore doc: subscriptions/{uid}
-    """
     doc = db.collection("subscriptions").document(uid).get()
     if not doc.exists:
         return {"subscribed": False, "plan": None, "expires_at": None}
@@ -160,7 +156,6 @@ def get_subscription(uid: str) -> Dict[str, Any]:
     expires_at = data.get("expires_at")  # Firestore timestamp -> datetime
 
     if not expires_at:
-        # lifetime
         return {"subscribed": True, "plan": plan, "expires_at": None}
 
     try:
@@ -173,10 +168,6 @@ def get_subscription(uid: str) -> Dict[str, Any]:
 
 
 def activate_subscription(uid: str, plan: str, decoded_user: Optional[dict] = None):
-    """
-    Writes/updates:
-      subscriptions/{uid}
-    """
     if not uid:
         raise ValueError("uid is required")
 
@@ -286,7 +277,7 @@ ins = pd.DataFrame(kite.instruments("NSE"))
 ins = ins[ins["tradingsymbol"].isin(ALL_SYMBOLS)].copy()
 
 symbol_to_token = dict(zip(ins["tradingsymbol"], ins["instrument_token"]))
-symbol_to_name = dict(zip(ins["tradingsymbol"], ins.get("name", "")))
+symbol_to_name = dict(zip(ins["tradingsymbol"], ins["name"])) if "name" in ins.columns else {s: "" for s in ins["tradingsymbol"].tolist()}
 TOKENS = sorted(symbol_to_token.values())
 
 
@@ -301,6 +292,13 @@ LAST_TICK_DT = None
 TOTAL_TICKS = 0
 TPS_WINDOW_SEC = 1.0
 TPS_BUCKETS = deque()
+
+# ---- Hot Now (15m) rolling history ----
+HOT_WINDOW_SEC = 15 * 60
+HOT_SAMPLE_SEC = 5  # store one sample per token per ~5 sec to keep memory small
+HOT_HISTORY: Dict[int, deque] = {}  # token -> deque[(epoch, ltp, cumvol)]
+HOT_HISTORY_MAX_SEC = HOT_WINDOW_SEC + 5 * 60  # keep some extra buffer
+
 
 # ------------------- DAILY STATS (RFactor baselines) -------------------
 LOOKBACK_SESSIONS = 20
@@ -331,6 +329,25 @@ def _get_tps():
     return sum(c for _, c in TPS_BUCKETS) / TPS_WINDOW_SEC
 
 
+def _hot_history_push(token: int, epoch: float, ltp: float, cumvol: Optional[float]):
+    dq = HOT_HISTORY.get(token)
+    if dq is None:
+        dq = deque()
+        HOT_HISTORY[token] = dq
+
+    if dq and (epoch - dq[-1][0]) < HOT_SAMPLE_SEC:
+        # update last sample instead of appending
+        last_epoch, _, last_vol = dq[-1]
+        dq[-1] = (last_epoch, float(ltp), float(cumvol) if cumvol is not None else last_vol)
+    else:
+        dq.append((float(epoch), float(ltp), float(cumvol) if cumvol is not None else None))
+
+    # trim old
+    cutoff = epoch - HOT_HISTORY_MAX_SEC
+    while dq and dq[0][0] < cutoff:
+        dq.popleft()
+
+
 def update_from_tick(tick: dict):
     token = tick["instrument_token"]
     ltp = tick.get("last_price")
@@ -346,6 +363,9 @@ def update_from_tick(tick: dict):
         DAY_VOL[token] = float(cumvol)
     if ohlc:
         LAST_OHLC[token] = ohlc
+
+    # hot-now history sampling (use wall clock epoch to be consistent)
+    _hot_history_push(token, time.time(), float(ltp), float(cumvol) if cumvol is not None else None)
 
     return ts
 
@@ -364,18 +384,30 @@ def compute_20d_daily_stats_for_token(token: int, days_back: int = 140):
     )
     df = pd.DataFrame(candles)
     if df.empty or len(df) < LOOKBACK_SESSIONS + 1:
-        return {"avg_vol_20": None, "avg_range_20": None, "avg_abs_ret_20": None}
+        return {
+            "avg_vol_20": None,
+            "avg_range_20": None,
+            "avg_abs_ret_20": None,
+            "avg_abs_oc_ret_20": None,
+        }
 
     df = df.tail(LOOKBACK_SESSIONS + 1).copy()
     df["range"] = (df["high"] - df["low"]).astype(float)
+
+    # close-to-close baseline (optional)
     df["prev_close"] = df["close"].shift(1)
     df["ret_pct"] = (df["close"] - df["prev_close"]) / df["prev_close"] * 100.0
+
+    # open-to-close baseline (used for "since open" move)
+    df["oc_ret_pct"] = (df["close"] - df["open"]) / df["open"] * 100.0
+
     df = df.dropna().tail(LOOKBACK_SESSIONS)
 
     return {
         "avg_vol_20": float(df["volume"].mean()),
         "avg_range_20": float(df["range"].mean()),
         "avg_abs_ret_20": float(df["ret_pct"].abs().mean()),
+        "avg_abs_oc_ret_20": float(df["oc_ret_pct"].abs().mean()),
     }
 
 
@@ -395,7 +427,12 @@ def seed_daily_stats_once(per_req_sleep: float = 0.35):
                 st = compute_20d_daily_stats_for_token(tok)
             except Exception:
                 DAILY_SEED_ERRORS += 1
-                st = {"avg_vol_20": None, "avg_range_20": None, "avg_abs_ret_20": None}
+                st = {
+                    "avg_vol_20": None,
+                    "avg_range_20": None,
+                    "avg_abs_ret_20": None,
+                    "avg_abs_oc_ret_20": None,
+                }
 
             with LOCK:
                 DAILY_STATS[tok] = st
@@ -409,43 +446,118 @@ def seed_daily_stats_once(per_req_sleep: float = 0.35):
 
 
 def compute_rfactor_row_for_token(token: int):
+    """
+    RFactor move is SINCE TODAY OPEN:
+      intraday_pct = (LTP - Open) / Open * 100
+
+    Baseline for move is avg absolute open->close % over last 20 days:
+      avg_abs_oc_ret_20
+    """
     ltp = LAST_PRICE.get(token)
     vol_today = DAY_VOL.get(token)
     ohlc = LAST_OHLC.get(token) or {}
 
     prev_close = ohlc.get("close")
+    day_open = ohlc.get("open")
     day_high = ohlc.get("high")
     day_low = ohlc.get("low")
 
-    if ltp is None or vol_today is None or prev_close is None:
+    if ltp is None or vol_today is None or prev_close is None or day_open is None:
         return None
 
     prev_close = float(prev_close)
+    day_open = float(day_open)
     ltp = float(ltp)
     vol_today = float(vol_today)
 
-    if prev_close <= 0 or ltp <= 0:
+    if prev_close <= 0 or day_open <= 0 or ltp <= 0:
         return None
 
-    pct_today = ((ltp - prev_close) / prev_close) * 100.0
+    gap_pct = ((day_open - prev_close) / prev_close) * 100.0
+    pct_open = ((ltp - day_open) / day_open) * 100.0
+
     range_today = (float(day_high) - float(day_low)) if (day_high is not None and day_low is not None) else 0.0
 
     st = DAILY_STATS.get(token) or {}
     avg_vol_20 = st.get("avg_vol_20")
     avg_range_20 = st.get("avg_range_20")
-    avg_abs_ret_20 = st.get("avg_abs_ret_20")
-    if not avg_vol_20 or not avg_range_20 or not avg_abs_ret_20:
+    avg_abs_oc_ret_20 = st.get("avg_abs_oc_ret_20")
+
+    if not avg_vol_20 or not avg_range_20 or not avg_abs_oc_ret_20:
         return None
 
     eps = 1e-9
     rvol = vol_today / (float(avg_vol_20) + eps)
     range_factor = max(0.0, range_today) / (float(avg_range_20) + eps)
-    move_factor = abs(pct_today) / (float(avg_abs_ret_20) + eps)
+    move_factor = abs(pct_open) / (float(avg_abs_oc_ret_20) + eps)
 
     rfactor = rvol * range_factor * move_factor
-    dirr = (1.0 if pct_today >= 0 else -1.0) * rfactor
+    dirr = (1.0 if pct_open >= 0 else -1.0) * rfactor
 
-    return {"pct": pct_today, "rfactor": rfactor, "dirr": dirr, "ltp": ltp, "prev_close": prev_close}
+    return {
+        "gap_pct": gap_pct,
+        "pct_open": pct_open,
+        "rfactor": rfactor,
+        "dirr": dirr,
+        "ltp": ltp,
+        "prev_close": prev_close,
+        "day_open": day_open,
+    }
+
+
+def _compute_hot_row_for_token(token: int):
+    """
+    Hot Now = last 15 minutes return + last 15 minutes volume delta.
+    Score = abs(ret_15m) * rvol_15m
+
+    rvol_15m compares 15m volume delta to "expected 15m volume" derived from avg_vol_20:
+      expected_15m = avg_vol_20 * (15m / full_session)
+
+    Full session seconds approx 9:15-15:30 = 6h15m = 22500 sec.
+    """
+    dq = HOT_HISTORY.get(token)
+    if not dq or len(dq) < 2:
+        return None
+
+    now_epoch = dq[-1][0]
+    cutoff = now_epoch - HOT_WINDOW_SEC
+
+    base = None
+    for t, p, v in dq:
+        if t <= cutoff:
+            base = (t, p, v)
+        else:
+            break
+    if base is None:
+        base = dq[0]
+
+    _, base_p, base_v = base
+    _, last_p, last_v = dq[-1]
+
+    if base_p is None or last_p is None or base_p <= 0:
+        return None
+
+    ret15 = (float(last_p) - float(base_p)) / float(base_p) * 100.0
+
+    vol15 = None
+    if base_v is not None and last_v is not None:
+        vol15 = float(last_v) - float(base_v)
+        if vol15 < 0:
+            vol15 = None  # safety
+
+    st = DAILY_STATS.get(token) or {}
+    avg_vol_20 = st.get("avg_vol_20") or None
+
+    rvol15 = None
+    if vol15 is not None and avg_vol_20 and avg_vol_20 > 0:
+        session_sec = 22500.0
+        expected_15 = float(avg_vol_20) * (HOT_WINDOW_SEC / session_sec)
+        rvol15 = vol15 / (expected_15 + 1e-9)
+
+    # Score: if no vol15 available, use abs(ret15) only
+    score = abs(ret15) * (rvol15 if (rvol15 is not None) else 1.0)
+
+    return {"ret15": ret15, "vol15": vol15, "rvol15": rvol15, "score": score}
 
 
 def top_gainers_losers_rfactor_rows(n: int = 15):
@@ -459,7 +571,8 @@ def top_gainers_losers_rfactor_rows(n: int = 15):
             continue
         rows.append({
             "Symbol": sym,
-            "Change%": round(float(rr["pct"]), 2),
+            "Gap%": round(float(rr["gap_pct"]), 2),
+            "Chg% (O)": round(float(rr["pct_open"]), 2),
             "RFactor": round(float(rr["rfactor"]), 2),
             "DirR": round(float(rr["dirr"]), 2),
         })
@@ -467,9 +580,36 @@ def top_gainers_losers_rfactor_rows(n: int = 15):
     if not rows:
         return [], []
 
-    df = pd.DataFrame(rows).dropna(subset=["Change%", "RFactor"])
-    gainers = df[df["Change%"] > 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
-    losers = df[df["Change%"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
+    df = pd.DataFrame(rows).dropna(subset=["Chg% (O)", "RFactor"])
+    gainers = df[df["Chg% (O)"] > 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
+    losers = df[df["Chg% (O)"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
+    return gainers, losers
+
+
+def top_hot_now_rows(n: int = 15):
+    rows = []
+    for sym in ALL_SYMBOLS:
+        tok = symbol_to_token.get(sym)
+        if not tok:
+            continue
+        hr = _compute_hot_row_for_token(tok)
+        if not hr:
+            continue
+
+        rows.append({
+            "Symbol": sym,
+            "Ret15m%": round(float(hr["ret15"]), 2),
+            "Vol15m": (int(hr["vol15"]) if hr["vol15"] is not None else None),
+            "RV15m": (round(float(hr["rvol15"]), 2) if hr["rvol15"] is not None else None),
+            "HotScore": round(float(hr["score"]), 2),
+        })
+
+    if not rows:
+        return [], []
+
+    df = pd.DataFrame(rows).dropna(subset=["Ret15m%", "HotScore"])
+    gainers = df[df["Ret15m%"] > 0].sort_values("HotScore", ascending=False).head(n).to_dict("records")
+    losers = df[df["Ret15m%"] < 0].sort_values("HotScore", ascending=False).head(n).to_dict("records")
     return gainers, losers
 
 
@@ -499,15 +639,16 @@ def sector_rows_sorted_by_rfactor(sector: str):
             continue
 
         ltp = rr["ltp"]
-        prev_close = rr["prev_close"]
-        chg = ltp - prev_close
+        day_open = rr["day_open"]
+        chg_open = ltp - day_open
 
         rows.append({
             "Symbol": s,
             "Company": symbol_to_name.get(s, ""),
             "Price": round(float(ltp), 2),
-            "Change": round(float(chg), 2),
-            "Change%": round(float(rr["pct"]), 2),
+            "Chg (O)": round(float(chg_open), 2),
+            "Gap%": round(float(rr["gap_pct"]), 2),
+            "Chg% (O)": round(float(rr["pct_open"]), 2),
             "RFactor": round(float(rr["rfactor"]), 2),
             "DirR": round(float(rr["dirr"]), 2),
         })
@@ -528,8 +669,8 @@ def market_status() -> str:
         return "CLOSED"
 
     preopen_dt = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    open_dt    = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    close_dt   = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    open_dt = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    close_dt = now.replace(hour=15, minute=30, second=0, microsecond=0)
 
     if preopen_dt <= now < open_dt:
         return "PREOPEN"
@@ -604,9 +745,6 @@ server = dash_app.server
 
 
 def get_user_from_dash_request() -> Optional[dict]:
-    """
-    Dash runs under Flask (WSGI). Read cookie from Flask request headers.
-    """
     try:
         from flask import request as flask_request  # type: ignore
         cookie_hdr = flask_request.headers.get("Cookie", "") or ""
@@ -780,15 +918,30 @@ def locked_page():
 
 
 def sectors_page():
-    common_cols = [
+    # RFactor columns (since OPEN)
+    rfactor_cols = [
         {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
-        {"field": "Change%", "type": "rightAligned",
+        {"field": "Gap%", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtPct(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+        {"field": "Chg% (O)", "type": "rightAligned",
          "valueFormatter": {"function": "fmtPct(params.value)"},
          "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
         {"field": "RFactor", "type": "rightAligned", "valueFormatter": {"function": "fmt2(params.value)"}},
         {"field": "DirR", "type": "rightAligned",
          "valueFormatter": {"function": "fmtSigned2(params.value)"},
          "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+    ]
+
+    # Hot Now columns (15m)
+    hot_cols = [
+        {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
+        {"field": "Ret15m%", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtPct(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+        {"field": "Vol15m", "type": "rightAligned", "valueFormatter": {"function": "fmtInt(params.value)"}},
+        {"field": "RV15m", "type": "rightAligned", "valueFormatter": {"function": "fmt2(params.value)"}},
+        {"field": "HotScore", "type": "rightAligned", "valueFormatter": {"function": "fmt2(params.value)"}},
     ]
 
     grid_opts = {
@@ -803,7 +956,7 @@ def sectors_page():
 
             html.H4("Sectors", className="page-title"),
             html.Div(id="sector-bars", className="sector-bars-wrap"),
-            html.Div("Sorted by AVG DirRFactor (sector strength).", className="hint"),
+            html.Div("Sector strength uses DirRFactor. RFactor move is since OPEN. Hot Now is last 15m.", className="hint"),
 
             html.Hr(),
 
@@ -811,30 +964,68 @@ def sectors_page():
                 [
                     dbc.Col(
                         [
-                            html.H6("Top 15 Gainers (by RFactor)", className="mt-1"),
+                            html.H6("Top 15 Gainers (RFactor, since OPEN)", className="mt-1"),
                             dag.AgGrid(
                                 id="top15-gainers-grid",
                                 className="ag-theme-alpine-dark grid-wrap compact-grid",
-                                columnDefs=common_cols,
+                                columnDefs=rfactor_cols,
                                 rowData=[],
                                 defaultColDef={"sortable": True, "filter": True, "resizable": True},
                                 dashGridOptions=grid_opts,
-                                style={"height": "min(760px, 72vh)", "width": "100%"},
+                                style={"height": "min(520px, 48vh)", "width": "100%"},
                             ),
                         ],
                         md=6,
                     ),
                     dbc.Col(
                         [
-                            html.H6("Top 15 Losers (by RFactor)", className="mt-1"),
+                            html.H6("Top 15 Losers (RFactor, since OPEN)", className="mt-1"),
                             dag.AgGrid(
                                 id="top15-losers-grid",
                                 className="ag-theme-alpine-dark grid-wrap compact-grid",
-                                columnDefs=common_cols,
+                                columnDefs=rfactor_cols,
                                 rowData=[],
                                 defaultColDef={"sortable": True, "filter": True, "resizable": True},
                                 dashGridOptions=grid_opts,
-                                style={"height": "min(760px, 72vh)", "width": "100%"},
+                                style={"height": "min(520px, 48vh)", "width": "100%"},
+                            ),
+                        ],
+                        md=6,
+                    ),
+                ],
+                className="g-2",
+            ),
+
+            html.Hr(),
+
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            html.H6("Hot Now (last 15m) — Gainers", className="mt-1"),
+                            dag.AgGrid(
+                                id="hot15-gainers-grid",
+                                className="ag-theme-alpine-dark grid-wrap compact-grid",
+                                columnDefs=hot_cols,
+                                rowData=[],
+                                defaultColDef={"sortable": True, "filter": True, "resizable": True},
+                                dashGridOptions=grid_opts,
+                                style={"height": "min(520px, 48vh)", "width": "100%"},
+                            ),
+                        ],
+                        md=6,
+                    ),
+                    dbc.Col(
+                        [
+                            html.H6("Hot Now (last 15m) — Losers", className="mt-1"),
+                            dag.AgGrid(
+                                id="hot15-losers-grid",
+                                className="ag-theme-alpine-dark grid-wrap compact-grid",
+                                columnDefs=hot_cols,
+                                rowData=[],
+                                defaultColDef={"sortable": True, "filter": True, "resizable": True},
+                                dashGridOptions=grid_opts,
+                                style={"height": "min(520px, 48vh)", "width": "100%"},
                             ),
                         ],
                         md=6,
@@ -868,10 +1059,13 @@ def sector_page(sector: str):
                 columnDefs=[
                     {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "StockCell", "minWidth": 200},
                     {"field": "Price", "type": "rightAligned", "valueFormatter": {"function": "fmt2(params.value)"}},
-                    {"field": "Change", "type": "rightAligned",
+                    {"field": "Chg (O)", "type": "rightAligned",
                      "valueFormatter": {"function": "fmtSigned2(params.value)"},
                      "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
-                    {"field": "Change%", "type": "rightAligned",
+                    {"field": "Gap%", "type": "rightAligned",
+                     "valueFormatter": {"function": "fmtPct(params.value)"},
+                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+                    {"field": "Chg% (O)", "type": "rightAligned",
                      "valueFormatter": {"function": "fmtPct(params.value)"},
                      "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
                     {"field": "RFactor", "type": "rightAligned", "valueFormatter": {"function": "fmt2(params.value)"}, "sort": "desc"},
@@ -1038,6 +1232,22 @@ def update_rfactor_leaderboards(_):
 
     with LOCK:
         gainers, losers = top_gainers_losers_rfactor_rows(n=15)
+    return gainers, losers
+
+
+@dash_app.callback(
+    Output("hot15-gainers-grid", "rowData"),
+    Output("hot15-losers-grid", "rowData"),
+    Input("refresh_sectors", "n_intervals"),
+)
+def update_hot_now(_):
+    decoded = get_user_from_dash_request()
+    uid = get_uid(decoded)
+    if not uid or not get_subscription(uid).get("subscribed"):
+        return [], []
+
+    with LOCK:
+        gainers, losers = top_hot_now_rows(n=15)
     return gainers, losers
 
 
@@ -1237,6 +1447,7 @@ def health():
             "tps": round(_get_tps(), 3),
             "total_ticks": TOTAL_TICKS,
             "last_tick_time": (LAST_TICK_DT.isoformat() if LAST_TICK_DT else None),
+            "hot_history_tokens": len(HOT_HISTORY),
         }
 
 
