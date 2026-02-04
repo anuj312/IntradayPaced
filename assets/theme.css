@@ -1086,3 +1086,85 @@ a:hover{
     0 0 26px rgba(255,81,102,0.10) !important;
   text-decoration: none !important;
 }
+
+/* =========================
+   LIGHT MODE OVERRIDES
+   Works with body.theme-light set by assets/themeSync.js
+   ========================= */
+body.theme-light{
+  --bg0:#f6f8fc;
+  --bg1:#eef2f8;
+
+  --glass: rgba(0,0,0,0.035);
+  --glass2: rgba(0,0,0,0.025);
+  --glass3: rgba(255,255,255,0.70);
+
+  --stroke: rgba(0,0,0,0.10);
+  --stroke2: rgba(0,0,0,0.14);
+  --stroke3: rgba(0,0,0,0.18);
+
+  --text: rgba(10,12,20,0.92);
+  --muted: rgba(10,12,20,0.60);
+
+  --good:#0b7a32;
+  --bad:#c61b2a;
+  --warn:#b45309;
+
+  color-scheme: light;
+}
+
+body.theme-light{
+  background:
+    radial-gradient(1200px 700px at 18% 12%, rgba(59,130,246,0.16), transparent 60%),
+    radial-gradient(1000px 700px at 85% 18%, rgba(168,85,247,0.14), transparent 60%),
+    radial-gradient(900px 600px at 50% 92%, rgba(34,211,238,0.10), transparent 62%),
+    linear-gradient(180deg, var(--bg0), var(--bg1));
+  color: var(--text);
+}
+
+/* tone down noise/vignette in light mode */
+body.theme-light:before{ opacity: 0.03; mix-blend-mode: normal; }
+body.theme-light:after{ opacity: 0.18; }
+
+/* Panels */
+body.theme-light .topbar-wrap,
+body.theme-light .page-wrap{
+  background: linear-gradient(180deg, rgba(255,255,255,0.70), rgba(255,255,255,0.45));
+  border-color: rgba(0,0,0,0.10);
+}
+
+/* Chips */
+body.theme-light .stat-chip{
+  background: rgba(255,255,255,0.65);
+  border-color: rgba(0,0,0,0.10);
+  color: rgba(10,12,20,0.92);
+}
+
+/* Theme toggle button */
+.stat-btn{ cursor: pointer; user-select:none; }
+body.theme-light .stat-btn{
+  background: linear-gradient(135deg, rgba(10,12,20,0.08), rgba(10,12,20,0.04)) !important;
+}
+
+/* AG Grid: make the existing alpine-dark look light via CSS vars */
+body.theme-light .ag-theme-alpine-dark{
+  --ag-background-color: rgba(255,255,255,0.70);
+  --ag-odd-row-background-color: rgba(0,0,0,0.02);
+
+  --ag-foreground-color: rgba(10,12,20,0.92);
+  --ag-secondary-foreground-color: rgba(10,12,20,0.62);
+
+  --ag-border-color: rgba(0,0,0,0.10);
+
+  --ag-header-background-color: rgba(255,255,255,0.75);
+  --ag-header-foreground-color: rgba(10,12,20,0.80);
+
+  --ag-row-hover-color: rgba(59,130,246,0.08);
+  --ag-selected-row-background-color: rgba(168,85,247,0.10);
+
+  --ag-input-border-color: rgba(0,0,0,0.16);
+  --ag-input-background-color: rgba(255,255,255,0.75);
+}
+body.theme-light .ag-theme-alpine-dark .ag-header-cell-label{
+  color: rgba(10,12,20,0.70);
+}

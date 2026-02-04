@@ -18,7 +18,7 @@ from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.datastructures import Headers
 
 import dash
-from dash import dcc, html, Input, Output
+from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import dash_ag_grid as dag
 
@@ -29,7 +29,7 @@ from firebase_admin import credentials, auth as fb_auth, firestore
 
 
 # ------------------- MOUNT PATH -------------------
-BASE = "/dash/"  # Browser URL: https://host/dash/
+BASE = "/dash/"
 
 
 # ------------------- FIREBASE (Web config used on /login) -------------------
@@ -42,21 +42,11 @@ FIREBASE_WEB_CONFIG = {
 
 SESSION_COOKIE_NAME = "session"
 SESSION_EXPIRES_DAYS = int(os.getenv("SESSION_EXPIRES_DAYS", "7"))
-
-# On Render (HTTPS) set COOKIE_SECURE=true. On localhost keep false.
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in ("1", "true", "yes")
 
 
 # ------------------- FIREBASE ADMIN INIT -------------------
 def init_firebase_admin():
-    """
-    Priority:
-      1) FIREBASE_SERVICE_ACCOUNT_B64  (recommended on Render)
-      2) FIREBASE_SERVICE_ACCOUNT_JSON (raw JSON string)
-      3) FIREBASE_SERVICE_ACCOUNT_PATH (path to existing JSON on server)
-
-    IMPORTANT: we do NOT default to 'service.json' to avoid Render FileNotFoundError.
-    """
     if firebase_admin._apps:
         return
 
@@ -72,25 +62,16 @@ def init_firebase_admin():
     )
 
     if b64:
-        try:
-            info = json.loads(base64.b64decode(b64).decode("utf-8"))
-            cred = credentials.Certificate(info)
-        except Exception as e:
-            raise RuntimeError(f"Invalid FIREBASE_SERVICE_ACCOUNT_B64: {e}") from e
-
+        info = json.loads(base64.b64decode(b64).decode("utf-8"))
+        cred = credentials.Certificate(info)
     elif raw:
-        try:
-            info = json.loads(raw)
-            cred = credentials.Certificate(info)
-        except Exception as e:
-            raise RuntimeError(f"Invalid FIREBASE_SERVICE_ACCOUNT_JSON: {e}") from e
-
+        info = json.loads(raw)
+        cred = credentials.Certificate(info)
     elif path:
         p = Path(path)
         if not p.exists():
             raise RuntimeError(f"FIREBASE_SERVICE_ACCOUNT_PATH='{path}' but file not found.")
         cred = credentials.Certificate(str(p))
-
     else:
         raise RuntimeError(
             "Missing Firebase admin credentials. Set FIREBASE_SERVICE_ACCOUNT_B64 (recommended) "
@@ -137,10 +118,10 @@ def get_uid(decoded: Optional[dict]) -> Optional[str]:
     return decoded.get("uid") if decoded else None
 
 
-# ------------------- SUBSCRIPTIONS (Firestore) -------------------
+# ------------------- SUBSCRIPTIONS -------------------
 PLAN_6M_PRICE = 4999
 PLAN_LIFE_PRICE = 9999
-PLAN_6M_DAYS = int(os.getenv("PLAN_6M_DAYS", "183"))  # ~6 months
+PLAN_6M_DAYS = int(os.getenv("PLAN_6M_DAYS", "183"))
 
 
 def get_subscription(uid: str) -> Dict[str, Any]:
@@ -153,7 +134,7 @@ def get_subscription(uid: str) -> Dict[str, Any]:
         return {"subscribed": False, "plan": data.get("plan"), "expires_at": data.get("expires_at")}
 
     plan = data.get("plan")
-    expires_at = data.get("expires_at")  # Firestore timestamp -> datetime
+    expires_at = data.get("expires_at")
 
     if not expires_at:
         return {"subscribed": True, "plan": plan, "expires_at": None}
@@ -195,7 +176,7 @@ def activate_subscription(uid: str, plan: str, decoded_user: Optional[dict] = No
         "status": "active",
         "plan": plan,
         "price_inr": price,
-        "expires_at": expires_at,  # None for lifetime
+        "expires_at": expires_at,
         "user_name": user_name,
         "user_email": user_email,
         "updated_at": firestore.SERVER_TIMESTAMP,
@@ -206,7 +187,7 @@ def activate_subscription(uid: str, plan: str, decoded_user: Optional[dict] = No
     ref.set(payload, merge=True)
 
 
-# ------------------- AUTH GATE (login required) -------------------
+# ------------------- AUTH GATE -------------------
 class AuthGate:
     def __init__(self, app):
         self.app = app
@@ -281,7 +262,7 @@ symbol_to_name = dict(zip(ins["tradingsymbol"], ins["name"])) if "name" in ins.c
 TOKENS = sorted(symbol_to_token.values())
 
 
-# ------------------- LIVE STATE (ticks) -------------------
+# ------------------- LIVE STATE -------------------
 LOCK = threading.Lock()
 LAST_PRICE: Dict[int, float] = {}
 DAY_VOL: Dict[int, float] = {}
@@ -295,12 +276,12 @@ TPS_BUCKETS = deque()
 
 # ---- Hot Now (15m) rolling history ----
 HOT_WINDOW_SEC = 15 * 60
-HOT_SAMPLE_SEC = 5  # store one sample per token per ~5 sec to keep memory small
+HOT_SAMPLE_SEC = 5
 HOT_HISTORY: Dict[int, deque] = {}  # token -> deque[(epoch, ltp, cumvol)]
-HOT_HISTORY_MAX_SEC = HOT_WINDOW_SEC + 5 * 60  # keep some extra buffer
+HOT_HISTORY_MAX_SEC = HOT_WINDOW_SEC + 5 * 60
 
 
-# ------------------- DAILY STATS (RFactor baselines) -------------------
+# ------------------- DAILY STATS -------------------
 LOOKBACK_SESSIONS = 20
 DAILY_STATS: Dict[int, Dict[str, Optional[float]]] = {}
 DAILY_SEED_STARTED = False
@@ -336,13 +317,11 @@ def _hot_history_push(token: int, epoch: float, ltp: float, cumvol: Optional[flo
         HOT_HISTORY[token] = dq
 
     if dq and (epoch - dq[-1][0]) < HOT_SAMPLE_SEC:
-        # update last sample instead of appending
         last_epoch, _, last_vol = dq[-1]
         dq[-1] = (last_epoch, float(ltp), float(cumvol) if cumvol is not None else last_vol)
     else:
         dq.append((float(epoch), float(ltp), float(cumvol) if cumvol is not None else None))
 
-    # trim old
     cutoff = epoch - HOT_HISTORY_MAX_SEC
     while dq and dq[0][0] < cutoff:
         dq.popleft()
@@ -364,9 +343,7 @@ def update_from_tick(tick: dict):
     if ohlc:
         LAST_OHLC[token] = ohlc
 
-    # hot-now history sampling (use wall clock epoch to be consistent)
     _hot_history_push(token, time.time(), float(ltp), float(cumvol) if cumvol is not None else None)
-
     return ts
 
 
@@ -384,29 +361,16 @@ def compute_20d_daily_stats_for_token(token: int, days_back: int = 140):
     )
     df = pd.DataFrame(candles)
     if df.empty or len(df) < LOOKBACK_SESSIONS + 1:
-        return {
-            "avg_vol_20": None,
-            "avg_range_20": None,
-            "avg_abs_ret_20": None,
-            "avg_abs_oc_ret_20": None,
-        }
+        return {"avg_vol_20": None, "avg_range_20": None, "avg_abs_oc_ret_20": None}
 
     df = df.tail(LOOKBACK_SESSIONS + 1).copy()
     df["range"] = (df["high"] - df["low"]).astype(float)
-
-    # close-to-close baseline (optional)
-    df["prev_close"] = df["close"].shift(1)
-    df["ret_pct"] = (df["close"] - df["prev_close"]) / df["prev_close"] * 100.0
-
-    # open-to-close baseline (used for "since open" move)
     df["oc_ret_pct"] = (df["close"] - df["open"]) / df["open"] * 100.0
-
     df = df.dropna().tail(LOOKBACK_SESSIONS)
 
     return {
         "avg_vol_20": float(df["volume"].mean()),
         "avg_range_20": float(df["range"].mean()),
-        "avg_abs_ret_20": float(df["ret_pct"].abs().mean()),
         "avg_abs_oc_ret_20": float(df["oc_ret_pct"].abs().mean()),
     }
 
@@ -427,12 +391,7 @@ def seed_daily_stats_once(per_req_sleep: float = 0.35):
                 st = compute_20d_daily_stats_for_token(tok)
             except Exception:
                 DAILY_SEED_ERRORS += 1
-                st = {
-                    "avg_vol_20": None,
-                    "avg_range_20": None,
-                    "avg_abs_ret_20": None,
-                    "avg_abs_oc_ret_20": None,
-                }
+                st = {"avg_vol_20": None, "avg_range_20": None, "avg_abs_oc_ret_20": None}
 
             with LOCK:
                 DAILY_STATS[tok] = st
@@ -447,11 +406,8 @@ def seed_daily_stats_once(per_req_sleep: float = 0.35):
 
 def compute_rfactor_row_for_token(token: int):
     """
-    RFactor move is SINCE TODAY OPEN:
-      intraday_pct = (LTP - Open) / Open * 100
-
-    Baseline for move is avg absolute open->close % over last 20 days:
-      avg_abs_oc_ret_20
+    RFactor uses move SINCE OPEN:
+      pct_open = (ltp - open) / open * 100
     """
     ltp = LAST_PRICE.get(token)
     vol_today = DAY_VOL.get(token)
@@ -475,14 +431,12 @@ def compute_rfactor_row_for_token(token: int):
 
     gap_pct = ((day_open - prev_close) / prev_close) * 100.0
     pct_open = ((ltp - day_open) / day_open) * 100.0
-
     range_today = (float(day_high) - float(day_low)) if (day_high is not None and day_low is not None) else 0.0
 
     st = DAILY_STATS.get(token) or {}
     avg_vol_20 = st.get("avg_vol_20")
     avg_range_20 = st.get("avg_range_20")
     avg_abs_oc_ret_20 = st.get("avg_abs_oc_ret_20")
-
     if not avg_vol_20 or not avg_range_20 or not avg_abs_oc_ret_20:
         return None
 
@@ -506,15 +460,6 @@ def compute_rfactor_row_for_token(token: int):
 
 
 def _compute_hot_row_for_token(token: int):
-    """
-    Hot Now = last 15 minutes return + last 15 minutes volume delta.
-    Score = abs(ret_15m) * rvol_15m
-
-    rvol_15m compares 15m volume delta to "expected 15m volume" derived from avg_vol_20:
-      expected_15m = avg_vol_20 * (15m / full_session)
-
-    Full session seconds approx 9:15-15:30 = 6h15m = 22500 sec.
-    """
     dq = HOT_HISTORY.get(token)
     if not dq or len(dq) < 2:
         return None
@@ -534,7 +479,7 @@ def _compute_hot_row_for_token(token: int):
     _, base_p, base_v = base
     _, last_p, last_v = dq[-1]
 
-    if base_p is None or last_p is None or base_p <= 0:
+    if base_p is None or last_p is None or float(base_p) <= 0:
         return None
 
     ret15 = (float(last_p) - float(base_p)) / float(base_p) * 100.0
@@ -543,30 +488,22 @@ def _compute_hot_row_for_token(token: int):
     if base_v is not None and last_v is not None:
         vol15 = float(last_v) - float(base_v)
         if vol15 < 0:
-            vol15 = None  # safety
+            vol15 = None
 
     st = DAILY_STATS.get(token) or {}
     avg_vol_20 = st.get("avg_vol_20") or None
 
     rvol15 = None
-    if vol15 is not None and avg_vol_20 and avg_vol_20 > 0:
-        session_sec = 22500.0
+    if vol15 is not None and avg_vol_20 and float(avg_vol_20) > 0:
+        session_sec = 22500.0  # 9:15-15:30
         expected_15 = float(avg_vol_20) * (HOT_WINDOW_SEC / session_sec)
-        rvol15 = vol15 / (expected_15 + 1e-9)
+        rvol15 = float(vol15) / (expected_15 + 1e-9)
 
-    # Score: if no vol15 available, use abs(ret15) only
     score = abs(ret15) * (rvol15 if (rvol15 is not None) else 1.0)
-
     return {"ret15": ret15, "vol15": vol15, "rvol15": rvol15, "score": score}
 
 
 def top_gainers_losers_rfactor_rows(n: int = 15):
-    """
-    Top tables:
-      - SHOW: % since OPEN, DirR, Gap%, RFactor
-      - FILTER: % since OPEN > 0 / < 0
-      - SORT: RFactor desc
-    """
     rows = []
     for sym in ALL_SYMBOLS:
         tok = symbol_to_token.get(sym)
@@ -578,7 +515,7 @@ def top_gainers_losers_rfactor_rows(n: int = 15):
 
         rows.append({
             "Symbol": sym,
-            "% (Open)": round(float(rr["pct_open"]), 2),   # <-- since open
+            "% (Open)": round(float(rr["pct_open"]), 2),
             "DirR": round(float(rr["dirr"]), 2),
             "Gap%": round(float(rr["gap_pct"]), 2),
             "RFactor": round(float(rr["rfactor"]), 2),
@@ -589,7 +526,7 @@ def top_gainers_losers_rfactor_rows(n: int = 15):
 
     df = pd.DataFrame(rows).dropna(subset=["% (Open)", "RFactor"])
     gainers = df[df["% (Open)"] > 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
-    losers  = df[df["% (Open)"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
+    losers = df[df["% (Open)"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
     return gainers, losers
 
 
@@ -667,25 +604,6 @@ def sector_rows_sorted_by_rfactor(sector: str):
     return df.to_dict("records")
 
 
-# ------------------- MARKET STATUS (PREOPEN/OPEN/CLOSED) -------------------
-IST = ZoneInfo("Asia/Kolkata")
-
-def market_status() -> str:
-    now = datetime.now(IST)
-    if now.weekday() >= 5:
-        return "CLOSED"
-
-    preopen_dt = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    open_dt = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    close_dt = now.replace(hour=15, minute=30, second=0, microsecond=0)
-
-    if preopen_dt <= now < open_dt:
-        return "PREOPEN"
-    if open_dt <= now < close_dt:
-        return "OPEN"
-    return "CLOSED"
-
-
 # ------------------- BACKGROUND TICKER -------------------
 _started = False
 
@@ -749,6 +667,8 @@ dash_app = dash.Dash(
     suppress_callback_exceptions=True,
 )
 server = dash_app.server
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 def get_user_from_dash_request() -> Optional[dict]:
@@ -894,27 +814,25 @@ def locked_page():
 
 
 def sectors_page():
-    # RFactor columns (since OPEN)
     rfactor_cols = [
-    {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
+        {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
 
-    {"field": "% (Open)", "type": "rightAligned",
-     "valueFormatter": {"function": "fmtPct(params.value)"},
-     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+        {"field": "% (Open)", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtPct(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
 
-    {"field": "DirR", "type": "rightAligned",
-     "valueFormatter": {"function": "fmtSigned2(params.value)"},
-     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+        {"field": "DirR", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtSigned2(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
 
-    {"field": "Gap%", "type": "rightAligned",
-     "valueFormatter": {"function": "fmtPct(params.value)"},
-     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+        {"field": "Gap%", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtPct(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
 
-    {"field": "RFactor", "type": "rightAligned",
-     "valueFormatter": {"function": "fmt2(params.value)"}},
-]
+        {"field": "RFactor", "type": "rightAligned",
+         "valueFormatter": {"function": "fmt2(params.value)"}},
+    ]
 
-    # Hot Now columns (15m)
     hot_cols = [
         {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
         {"field": "Ret15m%", "type": "rightAligned",
@@ -937,7 +855,7 @@ def sectors_page():
 
             html.H4("Sectors", className="page-title"),
             html.Div(id="sector-bars", className="sector-bars-wrap"),
-            html.Div("Sector strength uses DirRFactor. RFactor move is since OPEN. Hot Now is last 15m.", className="hint"),
+            html.Div("Sectors sorted by AVG DirR. Top tables sorted by RFactor. Hot Now is last 15m.", className="hint"),
 
             html.Hr(),
 
@@ -945,7 +863,7 @@ def sectors_page():
                 [
                     dbc.Col(
                         [
-                            html.H6("Top 15 Gainers (RFactor, since OPEN)", className="mt-1"),
+                            html.H6("Top 15 Gainers (sorted by RFactor)", className="mt-1"),
                             dag.AgGrid(
                                 id="top15-gainers-grid",
                                 className="ag-theme-alpine-dark grid-wrap compact-grid",
@@ -960,7 +878,7 @@ def sectors_page():
                     ),
                     dbc.Col(
                         [
-                            html.H6("Top 15 Losers (RFactor, since OPEN)", className="mt-1"),
+                            html.H6("Top 15 Losers (sorted by RFactor)", className="mt-1"),
                             dag.AgGrid(
                                 id="top15-losers-grid",
                                 className="ag-theme-alpine-dark grid-wrap compact-grid",
@@ -1069,26 +987,76 @@ def sector_page(sector: str):
     )
 
 
-dash_app.layout = dbc.Container(
-    fluid=True,
+# ---- DASH LAYOUT (theme wrapper + store) ----
+dash_app.layout = html.Div(
+    id="theme-root",
+    className="theme-dark",   # will be updated from theme-store
     children=[
+        dcc.Store(id="theme-store", storage_type="local"),
         dcc.Location(id="url"),
         dcc.Interval(id="top_refresh", interval=1000, n_intervals=0),
 
-        html.Div(
-            dbc.Row(
-                [
-                    dbc.Col(html.Div(id="top-nav"), width=True),
-                    dbc.Col(html.Div(id="top-stats"), width="auto"),
-                ],
-                className="align-items-center g-2",
-            ),
-            className="topbar-wrap",
-        ),
+        dbc.Container(
+            fluid=True,
+            children=[
+                html.Div(
+                    dbc.Row(
+                        [
+                            dbc.Col(html.Div(id="top-nav"), width=True),
+                            dbc.Col(
+                                html.Div(
+                                    [
+                                        html.Div(id="top-stats-dyn"),
+                                        html.Button(
+                                            "Light",
+                                            id="theme-toggle",
+                                            n_clicks=0,
+                                            type="button",
+                                            className="stat-chip stat-btn",
+                                        ),
+                                        html.A("Logout", href="/logout", className="stat-chip"),
+                                        html.Div(id="top-updated", className="stat-chip"),
+                                    ],
+                                    className="top-stats-wrap",
+                                ),
+                                width="auto",
+                            ),
+                        ],
+                        className="align-items-center g-2",
+                    ),
+                    className="topbar-wrap",
+                ),
 
-        html.Div(id="app-body"),
+                html.Div(id="app-body"),
+            ],
+        ),
     ],
 )
+
+
+# ---- THEME callbacks ----
+@dash_app.callback(
+    Output("theme-store", "data"),
+    Input("theme-toggle", "n_clicks"),
+    State("theme-store", "data"),
+    prevent_initial_call=True,
+)
+def _toggle_theme(n, data):
+    cur = (data or {}).get("theme", "dark")
+    nxt = "light" if cur == "dark" else "dark"
+    return {"theme": nxt}
+
+
+@dash_app.callback(
+    Output("theme-root", "className"),
+    Output("theme-toggle", "children"),
+    Input("theme-store", "data"),
+)
+def _apply_theme(data):
+    theme = (data or {}).get("theme", "dark")
+    # button text indicates what you will switch TO
+    btn = "Light" if theme == "dark" else "Dark"
+    return f"theme-{theme}", btn
 
 
 @dash_app.callback(
@@ -1126,7 +1094,11 @@ def route(pathname):
     return nav, sectors_page()
 
 
-@dash_app.callback(Output("top-stats", "children"), Input("top_refresh", "n_intervals"))
+@dash_app.callback(
+    Output("top-stats-dyn", "children"),
+    Output("top-updated", "children"),
+    Input("top_refresh", "n_intervals"),
+)
 def update_top_stats(_):
     updated_str = datetime.now(IST).strftime("%H:%M:%S")
 
@@ -1150,9 +1122,7 @@ def update_top_stats(_):
         chips.append(dbc.Badge("Seeding", color="warning", className="stat-badge"))
         chips.append(html.Div(f"20D {d_done_n}/{d_total} (err {DAILY_SEED_ERRORS})", className="stat-chip"))
 
-    chips.append(html.A("Logout", href="/logout", className="stat-chip", style={"cursor": "pointer"}))
-    chips.append(html.Div(f"Updated {updated_str}", className="stat-chip"))
-    return html.Div(chips, className="top-stats-wrap")
+    return chips, f"Updated {updated_str}"
 
 
 @dash_app.callback(
@@ -1437,5 +1407,4 @@ def root():
     return RedirectResponse(url=f"{BASE}", status_code=307)
 
 
-# Protect dashboard behind login session cookie
 app.mount("/dash", AuthGate(WSGIMiddleware(server)))
