@@ -49,26 +49,54 @@ COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in ("1", "true", "ye
 
 # ------------------- FIREBASE ADMIN INIT -------------------
 def init_firebase_admin():
+    """
+    Initializes Firebase Admin exactly once.
+
+    Priority:
+      1) FIREBASE_SERVICE_ACCOUNT_B64  (recommended on Render)
+      2) FIREBASE_SERVICE_ACCOUNT_JSON (raw JSON string)
+      3) FIREBASE_SERVICE_ACCOUNT_PATH (path to an existing json file)
+
+    NOTE: We do NOT default to "service.json" because that file won't exist on Render
+    unless you explicitly ship it (not recommended).
+    """
     if firebase_admin._apps:
         return
 
     b64 = os.getenv("FIREBASE_SERVICE_ACCOUNT_B64", "").strip()
-    path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "service.json").strip()
     raw = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+    path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "").strip()
+
+    cred = None
 
     if b64:
-        data = base64.b64decode(b64).decode("utf-8")
-        info = json.loads(data)
-        cred = credentials.Certificate(info)
+        try:
+            info = json.loads(base64.b64decode(b64).decode("utf-8"))
+            cred = credentials.Certificate(info)
+        except Exception as e:
+            raise RuntimeError(f"Invalid FIREBASE_SERVICE_ACCOUNT_B64: {e}") from e
+
     elif raw:
-        info = json.loads(raw)
-        cred = credentials.Certificate(info)
+        try:
+            info = json.loads(raw)
+            cred = credentials.Certificate(info)
+        except Exception as e:
+            raise RuntimeError(f"Invalid FIREBASE_SERVICE_ACCOUNT_JSON: {e}") from e
+
     elif path:
-        cred = credentials.Certificate(path)
+        p = Path(path)
+        if not p.exists():
+            raise RuntimeError(
+                f"FIREBASE_SERVICE_ACCOUNT_PATH was set to '{path}' but file does not exist."
+            )
+        cred = credentials.Certificate(str(p))
+
     else:
         raise RuntimeError(
-            "Missing Firebase admin credentials. Set FIREBASE_SERVICE_ACCOUNT_B64 (recommended) "
-            "or FIREBASE_SERVICE_ACCOUNT_PATH or FIREBASE_SERVICE_ACCOUNT_JSON."
+            "Missing Firebase admin credentials. Set one of:\n"
+            "  - FIREBASE_SERVICE_ACCOUNT_B64 (recommended)\n"
+            "  - FIREBASE_SERVICE_ACCOUNT_JSON\n"
+            "  - FIREBASE_SERVICE_ACCOUNT_PATH (must exist on server)\n"
         )
 
     firebase_admin.initialize_app(cred)
