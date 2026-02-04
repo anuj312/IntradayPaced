@@ -560,7 +560,7 @@ def _compute_hot_row_for_token(token: int):
     return {"ret15": ret15, "vol15": vol15, "rvol15": rvol15, "score": score}
 
 
-def top_gainers_losers_rfactor_rows(n: int = 15):
+def top_gainers_losers_rfactor_rows(n: int = 20):
     rows = []
     for sym in ALL_SYMBOLS:
         tok = symbol_to_token.get(sym)
@@ -569,20 +569,21 @@ def top_gainers_losers_rfactor_rows(n: int = 15):
         rr = compute_rfactor_row_for_token(tok)
         if not rr:
             continue
+
         rows.append({
             "Symbol": sym,
-            "Gap%": round(float(rr["gap_pct"]), 2),
-            "Chg% (O)": round(float(rr["pct_open"]), 2),
-            "RFactor": round(float(rr["rfactor"]), 2),
+            "Change%": round(float(rr["pct_open"]), 2),   # since OPEN
             "DirR": round(float(rr["dirr"]), 2),
+            "Gap%": round(float(rr["gap_pct"]), 2),
+            "RFactor": round(float(rr["rfactor"]), 2),
         })
 
     if not rows:
         return [], []
 
-    df = pd.DataFrame(rows).dropna(subset=["Chg% (O)", "RFactor"])
-    gainers = df[df["Chg% (O)"] > 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
-    losers = df[df["Chg% (O)"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
+    df = pd.DataFrame(rows).dropna(subset=["Change%", "RFactor"])
+    gainers = df[df["Change%"] > 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
+    losers  = df[df["Change%"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
     return gainers, losers
 
 
@@ -920,18 +921,23 @@ def locked_page():
 def sectors_page():
     # RFactor columns (since OPEN)
     rfactor_cols = [
-        {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
-        {"field": "Gap%", "type": "rightAligned",
-         "valueFormatter": {"function": "fmtPct(params.value)"},
-         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
-        {"field": "Chg% (O)", "type": "rightAligned",
-         "valueFormatter": {"function": "fmtPct(params.value)"},
-         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
-        {"field": "RFactor", "type": "rightAligned", "valueFormatter": {"function": "fmt2(params.value)"}},
-        {"field": "DirR", "type": "rightAligned",
-         "valueFormatter": {"function": "fmtSigned2(params.value)"},
-         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
-    ]
+    {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
+
+    {"field": "Change%", "type": "rightAligned",
+     "valueFormatter": {"function": "fmtPct(params.value)"},
+     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+
+    {"field": "DirR", "type": "rightAligned",
+     "valueFormatter": {"function": "fmtSigned2(params.value)"},
+     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+
+    {"field": "Gap%", "type": "rightAligned",
+     "valueFormatter": {"function": "fmtPct(params.value)"},
+     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+
+    {"field": "RFactor", "type": "rightAligned",
+     "valueFormatter": {"function": "fmt2(params.value)"}},
+]
 
     # Hot Now columns (15m)
     hot_cols = [
