@@ -560,7 +560,13 @@ def _compute_hot_row_for_token(token: int):
     return {"ret15": ret15, "vol15": vol15, "rvol15": rvol15, "score": score}
 
 
-def top_gainers_losers_rfactor_rows(n: int = 20):
+def top_gainers_losers_rfactor_rows(n: int = 15):
+    """
+    Top tables:
+      - SHOW: % since OPEN, DirR, Gap%, RFactor
+      - FILTER: % since OPEN > 0 / < 0
+      - SORT: RFactor desc
+    """
     rows = []
     for sym in ALL_SYMBOLS:
         tok = symbol_to_token.get(sym)
@@ -572,7 +578,7 @@ def top_gainers_losers_rfactor_rows(n: int = 20):
 
         rows.append({
             "Symbol": sym,
-            "Change%": round(float(rr["pct_open"]), 2),   # since OPEN
+            "% (Open)": round(float(rr["pct_open"]), 2),   # <-- since open
             "DirR": round(float(rr["dirr"]), 2),
             "Gap%": round(float(rr["gap_pct"]), 2),
             "RFactor": round(float(rr["rfactor"]), 2),
@@ -581,9 +587,9 @@ def top_gainers_losers_rfactor_rows(n: int = 20):
     if not rows:
         return [], []
 
-    df = pd.DataFrame(rows).dropna(subset=["Change%", "RFactor"])
-    gainers = df[df["Change%"] > 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
-    losers  = df[df["Change%"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
+    df = pd.DataFrame(rows).dropna(subset=["% (Open)", "RFactor"])
+    gainers = df[df["% (Open)"] > 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
+    losers  = df[df["% (Open)"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
     return gainers, losers
 
 
@@ -892,7 +898,7 @@ def sectors_page():
     rfactor_cols = [
     {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
 
-    {"field": "Change%", "type": "rightAligned",
+    {"field": "% (Open)", "type": "rightAligned",
      "valueFormatter": {"function": "fmtPct(params.value)"},
      "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
 
