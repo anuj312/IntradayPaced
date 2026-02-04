@@ -855,34 +855,11 @@ def subscription_overlay(uname: str):
 
 
 def top_nav(uname: str, plan_text: str):
-    state = market_status()
-
     def pill(text: str, kind: str):
         cls = "nav-link top-tab"
         style = {"cursor": "default"}
 
-        if kind == "open":
-            style |= {
-                "background": "linear-gradient(90deg, rgba(51,255,139,0.22), rgba(51,255,139,0.10))",
-                "borderColor": "rgba(51,255,139,0.30)",
-                "color": "rgba(51,255,139,0.95)",
-                "boxShadow": "0 18px 44px rgba(51,255,139,0.10)",
-            }
-        elif kind == "preopen":
-            style |= {
-                "background": "linear-gradient(90deg, rgba(250,204,21,0.22), rgba(250,204,21,0.10))",
-                "borderColor": "rgba(250,204,21,0.30)",
-                "color": "rgba(250,204,21,0.95)",
-                "boxShadow": "0 18px 44px rgba(250,204,21,0.10)",
-            }
-        elif kind == "closed":
-            style |= {
-                "background": "linear-gradient(90deg, rgba(255,81,102,0.22), rgba(255,81,102,0.10))",
-                "borderColor": "rgba(255,81,102,0.30)",
-                "color": "rgba(255,81,102,0.95)",
-                "boxShadow": "0 18px 44px rgba(255,81,102,0.10)",
-            }
-        elif kind == "plan":
+        if kind == "plan":
             style |= {
                 "background": "linear-gradient(90deg, rgba(59,130,246,0.22), rgba(168,85,247,0.18))",
                 "borderColor": "rgba(255,255,255,0.18)",
@@ -892,16 +869,8 @@ def top_nav(uname: str, plan_text: str):
 
         return dbc.NavItem(html.Div(text, className=cls, style=style))
 
-    if state == "OPEN":
-        state_kind = "open"
-    elif state == "PREOPEN":
-        state_kind = "preopen"
-    else:
-        state_kind = "closed"
-
     return dbc.Nav(
         [
-            pill(state, state_kind),
             pill(uname, "user"),
             pill(plan_text, "plan"),
         ],
@@ -1153,7 +1122,7 @@ def route(pathname):
 
 @dash_app.callback(Output("top-stats", "children"), Input("top_refresh", "n_intervals"))
 def update_top_stats(_):
-    updated_str = datetime.now().strftime("%H:%M:%S")
+    updated_str = datetime.now(IST).strftime("%H:%M:%S")
 
     with LOCK:
         offline = (time.time() - LAST_TICK_TS) > 10 if LAST_TICK_TS else True
