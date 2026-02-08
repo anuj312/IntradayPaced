@@ -13,7 +13,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
+from fastapi.templating import Jinja2Templates
 from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.datastructures import Headers
 
@@ -234,34 +235,34 @@ if not API_KEY or not ACCESS_TOKEN:
 
 # ------------------- SECTORS -------------------
 SECTOR_DEFINITIONS = {
-    "METAL": ["ADANIENT","HINDALCO","JSWSTEEL","HINDZINC","APLAPOLLO","TATASTEEL","JINDALSTEL","VEDL","SAIL","NATIONALUM","NMDC"],
-    "PSUS": ["BANKINDIA","PNB","INDIANB","SBIN","UNIONBANK","BANKBARODA","CANBK"],
-    "REALTY": ["PHOENIXLTD","GODREJPROP","LODHA","OBEROIRLTY","DLF","PRESTIGE","NBCC","NCC"],
-    "ENERGY": ["CGPOWER","RELIANCE","GMRAIRPORT","JSWENERGY","ONGC","POWERGRID","BLUESTARCO","COALINDIA","SUZLON","IREDA",
-               "IOC","IGL","TATAPOWER","INOXWIND","MAZDOCK","PETRONET","SOLARINDS","ADANIGREEN","NTPC","OIL","BDL","BPCL",
-               "NHPC","POWERINDIA","ADANIENSOL","TORRENTPOWER"],
-    "AUTO": ["BOSCHLTD","TIINDIA","HEROMOTOCO","M&M","EICHERMOT","EXIDEIND","BAJAJ-AUTO","ASHOKLEY","MARUTI","TITAGARH",
-             "TVSMOTOR","MOTHERSON","SONACOMS","UNOMINDA","TATAMOTORS","BHARATFORG"],
-    "IT": ["KAYNES","TATATECH","LTIM","CYIENT","MPHASIS","TCS","CAMS","OFSS","HFCL","TECHM","TATAELXSI","HCLTECH","WIPRO",
-           "KPITTECH","COFORGE","PERSISTENT","INFY"],
-    "PHARMA": ["CIPLA","ALKEM","BIOCON","DRREDDY","MANKIND","TORNTPHARM","ZYDUSLIFE","DIVISLAB","LUPIN","PPLPHARMA",
-               "LAURUSLABS","FORTIS","AUROPHARMA","GLENMARK","SUNPHARMA"],
-    "FMCG": ["ETERNAL","MARICO","NYKAA","NESTLEIND","VBL","COLPAL","HINDUNILVR","PATANJALI","DMART","DABUR","GODREJCP",
-             "BRITANNIA","UNITDSPR","ITC","TATACONSUM","KALYANKJIL","SUPREMEIND"],
-    "CEMENT": ["SHREECEM","DALBHARAT","AMBUJACEM","ULTRACEMCO"],
-    "FINSERVICE": ["PNBHOUSING","BAJAJFINSV","ICICIPRULI","NUVAMA","HDFCLIFE","SAMMAANCAP","ANGELONE","RECLTD","BAJFINANCE",
-                   "BSE","MAXHEALTH","ICICIGI","HUDCO","CHOLAFIN","PFC","HDFCAMC","MUTHOOTFIN","PAYTM","JIOFIN","SHRIRAMFIN",
-                   "SBICARD","POLICYBZR","SBILIFE","LICHSGFIN","LICI","MANAPPURAM","IRFC","IIFL","CDSL"],
-    "BANK": ["IDFCFIRSTB","FEDERALBNK","INDUSINDBK","HDFCBANK","SBIN","KOTAKBANK","AUBANK","CANBK","BANDHANBNK","RBLBANK",
-             "ICICIBANK","AXISBANK"],
-    "NIFTY_50": ["ADANIENT","ADANIPORTS","APOLLOHOSP","ASIANPAINT","AXISBANK","BAJAJ-AUTO","BAJFINANCE","BAJAJFINSV","BEL",
-                "BHARTIARTL","CIPLA","COALINDIA","DRREDDY","EICHERMOT","GRASIM","HCLTECH","HDFCBANK","HDFCLIFE","HINDALCO",
-                "HINDUNILVR","ICICIBANK","INFY","INDIGO","ITC","JIOFIN","JSWSTEEL","KOTAKBANK","LT","M&M","MARUTI","MAXHEALTH",
-                "NESTLEIND","NTPC","ONGC","POWERGRID","RELIANCE","SBILIFE","SHRIRAMFIN","SBIN","SUNPHARMA","TCS","TATACONSUM",
-                "TATASTEEL","TECHM","TITAN","TRENT","ULTRACEMCO","WIPRO","TATAMOTORS","ETERNAL"],
-    "MIDCAP": ["RVNL","MPHASIS","HINDPETRO","PAGEIND","POLYCAB","LUPIN","IDFCFIRSTB","CONCOR","CUMMINSIND","VOLTAS",
-               "BHARATFORG","FEDERALBNK","INDHOTEL","COFORGE","ASHOKLEY","PERSISTENT","UPL","GODREJPROP","AUROPHARMA","AUBANK",
-               "ASTRAL","HDFCAMC","JUBLFOOD","PIIND"],
+    "METAL": ["ADANIENT", "HINDALCO", "JSWSTEEL", "HINDZINC", "APLAPOLLO", "TATASTEEL", "JINDALSTEL", "VEDL", "SAIL", "NATIONALUM", "NMDC"],
+    "PSUS": ["BANKINDIA", "PNB", "INDIANB", "SBIN", "UNIONBANK", "BANKBARODA", "CANBK"],
+    "REALTY": ["PHOENIXLTD", "GODREJPROP", "LODHA", "OBEROIRLTY", "DLF", "PRESTIGE", "NBCC", "NCC"],
+    "ENERGY": ["CGPOWER", "RELIANCE", "GMRAIRPORT", "JSWENERGY", "ONGC", "POWERGRID", "BLUESTARCO", "COALINDIA", "SUZLON", "IREDA",
+               "IOC", "IGL", "TATAPOWER", "INOXWIND", "MAZDOCK", "PETRONET", "SOLARINDS", "ADANIGREEN", "NTPC", "OIL", "BDL", "BPCL",
+               "NHPC", "POWERINDIA", "ADANIENSOL", "TORRENTPOWER"],
+    "AUTO": ["BOSCHLTD", "TIINDIA", "HEROMOTOCO", "M&M", "EICHERMOT", "EXIDEIND", "BAJAJ-AUTO", "ASHOKLEY", "MARUTI", "TITAGARH",
+             "TVSMOTOR", "MOTHERSON", "SONACOMS", "UNOMINDA", "TATAMOTORS", "BHARATFORG"],
+    "IT": ["KAYNES", "TATATECH", "LTIM", "CYIENT", "MPHASIS", "TCS", "CAMS", "OFSS", "HFCL", "TECHM", "TATAELXSI", "HCLTECH", "WIPRO",
+           "KPITTECH", "COFORGE", "PERSISTENT", "INFY"],
+    "PHARMA": ["CIPLA", "ALKEM", "BIOCON", "DRREDDY", "MANKIND", "TORNTPHARM", "ZYDUSLIFE", "DIVISLAB", "LUPIN", "PPLPHARMA",
+               "LAURUSLABS", "FORTIS", "AUROPHARMA", "GLENMARK", "SUNPHARMA"],
+    "FMCG": ["ETERNAL", "MARICO", "NYKAA", "NESTLEIND", "VBL", "COLPAL", "HINDUNILVR", "PATANJALI", "DMART", "DABUR", "GODREJCP",
+             "BRITANNIA", "UNITDSPR", "ITC", "TATACONSUM", "KALYANKJIL", "SUPREMEIND"],
+    "CEMENT": ["SHREECEM", "DALBHARAT", "AMBUJACEM", "ULTRACEMCO"],
+    "FINSERVICE": ["PNBHOUSING", "BAJAJFINSV", "ICICIPRULI", "NUVAMA", "HDFCLIFE", "SAMMAANCAP", "ANGELONE", "RECLTD", "BAJFINANCE",
+                   "BSE", "MAXHEALTH", "ICICIGI", "HUDCO", "CHOLAFIN", "PFC", "HDFCAMC", "MUTHOOTFIN", "PAYTM", "JIOFIN", "SHRIRAMFIN",
+                   "SBICARD", "POLICYBZR", "SBILIFE", "LICHSGFIN", "LICI", "MANAPPURAM", "IRFC", "IIFL", "CDSL"],
+    "BANK": ["IDFCFIRSTB", "FEDERALBNK", "INDUSINDBK", "HDFCBANK", "SBIN", "KOTAKBANK", "AUBANK", "CANBK", "BANDHANBNK", "RBLBANK",
+             "ICICIBANK", "AXISBANK"],
+    "NIFTY_50": ["ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BEL",
+                "BHARTIARTL", "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", "HINDALCO",
+                "HINDUNILVR", "ICICIBANK", "INFY", "INDIGO", "ITC", "JIOFIN", "JSWSTEEL", "KOTAKBANK", "LT", "M&M", "MARUTI", "MAXHEALTH",
+                "NESTLEIND", "NTPC", "ONGC", "POWERGRID", "RELIANCE", "SBILIFE", "SHRIRAMFIN", "SBIN", "SUNPHARMA", "TCS", "TATACONSUM",
+                "TATASTEEL", "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO", "TATAMOTORS", "ETERNAL"],
+    "MIDCAP": ["RVNL", "MPHASIS", "HINDPETRO", "PAGEIND", "POLYCAB", "LUPIN", "IDFCFIRSTB", "CONCOR", "CUMMINSIND", "VOLTAS",
+               "BHARATFORG", "FEDERALBNK", "INDHOTEL", "COFORGE", "ASHOKLEY", "PERSISTENT", "UPL", "GODREJPROP", "AUROPHARMA", "AUBANK",
+               "ASTRAL", "HDFCAMC", "JUBLFOOD", "PIIND"],
 }
 ALL_SYMBOLS = sorted(set(sum(SECTOR_DEFINITIONS.values(), [])))
 
@@ -563,7 +564,7 @@ def top_gainers_losers_rfactor_rows(n: int = 15):
 
         rows.append({
             "Symbol": sym,
-            "% (Open)": round(float(rr["pct_open"]), 2),   # <-- since open
+            "% (Open)": round(float(rr["pct_open"]), 2),  # since open
             "DirR": round(float(rr["dirr"]), 2),
             "Gap%": round(float(rr["gap_pct"]), 2),
             "RFactor": round(float(rr["rfactor"]), 2),
@@ -574,7 +575,7 @@ def top_gainers_losers_rfactor_rows(n: int = 15):
 
     df = pd.DataFrame(rows).dropna(subset=["% (Open)", "RFactor"])
     gainers = df[df["% (Open)"] > 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
-    losers  = df[df["% (Open)"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
+    losers = df[df["% (Open)"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
     return gainers, losers
 
 
@@ -654,6 +655,7 @@ def sector_rows_sorted_by_rfactor(sector: str):
 
 # ------------------- BACKGROUND TICKER -------------------
 _started = False
+
 
 def start_ticker_once():
     global _started
@@ -830,7 +832,6 @@ def subscription_overlay(uname: str):
 
 
 def top_nav(uname: str, plan_text: str):
-    # OPEN/CLOSED pill removed (as requested)
     def pill(text: str, kind: str):
         cls = "nav-link top-tab"
         style = {"cursor": "default"}
@@ -864,26 +865,20 @@ def locked_page():
 
 
 def sectors_page():
-    # Top 15 columns (order requested):
-    # Current% (prev close), DirR, Gap%, RFactor
     rfactor_cols = [
-    {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
-
-    {"field": "% (Open)", "type": "rightAligned",
-     "valueFormatter": {"function": "fmtPct(params.value)"},
-     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
-
-    {"field": "DirR", "type": "rightAligned",
-     "valueFormatter": {"function": "fmtSigned2(params.value)"},
-     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
-
-    {"field": "Gap%", "type": "rightAligned",
-     "valueFormatter": {"function": "fmtPct(params.value)"},
-     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
-
-    {"field": "RFactor", "type": "rightAligned",
-     "valueFormatter": {"function": "fmt2(params.value)"}},
-]
+        {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
+        {"field": "% (Open)", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtPct(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+        {"field": "DirR", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtSigned2(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+        {"field": "Gap%", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtPct(params.value)"},
+         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"}},
+        {"field": "RFactor", "type": "rightAligned",
+         "valueFormatter": {"function": "fmt2(params.value)"}},
+    ]
 
     hot_cols = [
         {"field": "Symbol", "headerName": "Stock", "pinned": "left", "cellRenderer": "SymbolCell", "minWidth": 120},
@@ -1101,7 +1096,6 @@ IST = ZoneInfo("Asia/Kolkata")
 
 @dash_app.callback(Output("top-stats", "children"), Input("top_refresh", "n_intervals"))
 def update_top_stats(_):
-    # show correct IST time
     updated_str = datetime.now(IST).strftime("%H:%M:%S")
 
     with LOCK:
@@ -1229,10 +1223,11 @@ def update_grid(_, pathname):
 
 
 # ------------------- FASTAPI APP -------------------
-app = FastAPI(title="Stocker")
+app = FastAPI(title="TurboTrades")
 
 HERE = Path(__file__).resolve().parent
 THEME_PATH = HERE / "assets" / "theme.css"
+templates = Jinja2Templates(directory=str(HERE / "templates"))
 
 
 @app.on_event("startup")
@@ -1248,78 +1243,16 @@ def theme_css():
     return JSONResponse({"error": "theme.css not found"}, status_code=404)
 
 
-LOGIN_HTML = f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Login • TradeCorner</title>
-  <link rel="stylesheet" href="/theme.css">
-</head>
-<body class="login-body">
-  <div class="login-stage">
-    <div class="login-blur"></div>
-    <div class="login-cardWrap">
-      <div class="login-panel">
-        <div class="login-title">TradeCorner • Login</div>
-        <div class="login-sub">Sign in with Google to access the dashboard.</div>
-        <button class="login-btn" id="googleBtn">Login with Google</button>
-        <div class="login-err" id="err"></div>
-        <div class="login-foot">If login fails, check pop-up blockers.</div>
-      </div>
-    </div>
-  </div>
-
-  <script type="module">
-    import {{ initializeApp }} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-    import {{ getAuth, GoogleAuthProvider, signInWithPopup }}
-      from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-
-    const firebaseConfig = {json.dumps(FIREBASE_WEB_CONFIG)};
-    const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
-    const provider = new GoogleAuthProvider();
-
-    function qs(name) {{
-      const u = new URL(window.location.href);
-      return u.searchParams.get(name) || "";
-    }}
-
-    async function sessionLogin(idToken) {{
-      const res = await fetch("/auth/sessionLogin", {{
-        method: "POST",
-        headers: {{ "content-type": "application/json" }},
-        credentials: "include",
-        body: JSON.stringify({{ idToken }})
-      }});
-      if (!res.ok) {{
-        const txt = await res.text();
-        throw new Error(txt || ("HTTP " + res.status));
-      }}
-    }}
-
-    document.getElementById("googleBtn").addEventListener("click", async () => {{
-      const errEl = document.getElementById("err");
-      errEl.textContent = "";
-      try {{
-        const result = await signInWithPopup(auth, provider);
-        const idToken = await result.user.getIdToken(true);
-        await sessionLogin(idToken);
-        const next = qs("next") || "{BASE}";
-        window.location.href = next;
-      }} catch (e) {{
-        errEl.textContent = String(e && e.message ? e.message : e);
-      }}
-    }});
-  </script>
-</body>
-</html>
-"""
-
-
 @app.get("/login")
-def login():
-    return HTMLResponse(LOGIN_HTML)
+def login(request: Request):
+    return templates.TemplateResponse(
+        "login.html",
+        {
+            "request": request,
+            "firebase_config_json": json.dumps(FIREBASE_WEB_CONFIG),
+            "base": BASE,
+        },
+    )
 
 
 @app.post("/auth/sessionLogin")
@@ -1411,8 +1344,11 @@ def health():
 
 
 @app.get("/")
-def root():
-    return RedirectResponse(url=f"{BASE}", status_code=307)
+def root(request: Request):
+    decoded = verify_session_cookie_from_headers(Headers(request.headers))
+    if decoded:
+        return RedirectResponse(url=f"{BASE}", status_code=307)
+    return RedirectResponse(url="/login", status_code=307)
 
 
 # Protect dashboard behind login session cookie

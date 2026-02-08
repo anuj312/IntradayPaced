@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>TurboTrades | Trade Smarter</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Poppins', sans-serif;
+      background: radial-gradient(circle at top, #0f2027, #000000);
+      color: #ffffff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ================= HEADER ================= */
+    header {
+      padding: 22px 60px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .logo {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      color: #00f5ff;
+      text-shadow: 0 0 18px rgba(0,245,255,0.5);
+    }
+
+    nav a {
+      margin-left: 34px;
+      text-decoration: none;
+      color: #9aa6ac;
+      font-size: 14px;
+      letter-spacing: 1px;
+      transition: 0.3s;
+    }
+
+    nav a:hover { color: #00f5ff; }
+
+    /* ================= MAIN CENTER ================= */
+    main {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    /* ================= LOGIN BOX ================= */
+    .login-box {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.12);
+      backdrop-filter: blur(18px);
+      border-radius: 18px;
+      padding: 48px 42px;
+      width: 100%;
+      max-width: 440px;
+      text-align: center;
+      box-shadow: 0 0 45px rgba(0,245,255,0.18);
+    }
+
+    /* HERO TEXT INSIDE CARD */
+    .small-line {
+      font-size: 18px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      color: #9aa6ac;
+      margin-bottom: 12px;
+    }
+
+    .big-line {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 42px;
+      font-weight: 800;
+      line-height: 1.2;
+      margin-bottom: 30px;
+      background: linear-gradient(90deg, #00f5ff, #00ff9d, #ffffff, #00f5ff);
+      background-size: 300% auto;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: heroGlow 6s linear infinite;
+      text-shadow: 0 0 35px rgba(0,245,255,0.25);
+    }
+
+    @keyframes heroGlow {
+      to { background-position: 300% center; }
+    }
+
+    .login-box h1 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 26px;
+      margin-bottom: 6px;
+      color: #00f5ff;
+    }
+
+    .tagline {
+      font-size: 14px;
+      color: #aab6bc;
+      margin-bottom: 22px;
+    }
+
+    /* ================= GOOGLE BUTTON ================= */
+    .google-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: #ffffff;
+      color: #000;
+      padding: 15px;
+      border-radius: 10px;
+      font-weight: 1000;
+      letter-spacing: 0.4px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      border: none;
+      outline: none;
+      text-decoration: none;
+      user-select: none;
+      font:size 29px;
+    }
+
+    .google-btn img { width: 20px; }
+
+    .google-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 30px rgba(0,0,0,0.45);
+    }
+
+    .google-btn:disabled {
+      opacity: 0.75;
+      cursor: progress;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .err {
+      margin-top: 12px;
+      min-height: 18px;
+      font-size: 12.5px;
+      color: #ffb4b4;
+      font-weight: 600;
+      white-space: pre-wrap;
+      text-align: center;
+    }
+
+    .divider {
+      margin: 28px 0;
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: #7f8c93;
+      position: relative;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: "";
+      height: 1px;
+      width: 30%;
+      background: rgba(255,255,255,0.2);
+      position: absolute;
+      top: 50%;
+    }
+
+    .divider::before { left: 0; }
+    .divider::after { right: 0; }
+
+    .info-text {
+      font-size: 13px;
+      color: #b2bcc2;
+      line-height: 1.65;
+    }
+
+    /* ================= FOOTER ================= */
+    footer {
+      padding: 18px;
+      text-align: center;
+      font-size: 12px;
+      color: #7f8c93;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+
+    footer span { color: #00f5ff; }
+
+    /* ================= RESPONSIVE ================= */
+    @media (max-width: 768px) {
+      header { padding: 18px; }
+      nav { display: none; }
+      .big-line { font-size: 34px; }
+      .login-box { padding: 38px 26px; }
+    }
+  </style>
+</head>
+
+<body>
+  <!-- HEADER -->
+  <header>
+    <div class="logo">TurboTrades</div>
+    <nav>
+      <a href="/login">Markets</a>
+      <a href="/login">Analytics</a>
+      <a href="/login">Pricing</a>
+      <a href="/login">Support</a>
+    </nav>
+  </header>
+
+  <!-- MAIN -->
+  <main>
+    <div class="login-box">
+      <div class="small-line">Trade Smarter With</div>
+      <div class="big-line">Live Intraday Opportunities</div>
+
+      <h1>TurboTrades</h1>
+      <p class="tagline">Institutional-grade intraday execution for serious traders</p>
+
+      <button id="googleBtn" class="google-btn" type="button">
+        <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="Google">
+        Continue with Google
+      </button>
+
+      <div id="err" class="err" role="status" aria-live="polite"></div>
+
+      <div class="divider">SECURE ACCESS</div>
+
+      <p class="info-text">
+        Access <strong>real-time intraday signals</strong>,
+        <strong>AI-validated trade setups</strong>, and
+        <strong>millisecond-level execution</strong> — all in one
+        professional trading environment.
+      </p>
+    </div>
+  </main>
+
+  <!-- FOOTER -->
+  <footer>
+    © <span id="year"></span> <span>TurboTrades</span>. All rights reserved.
+  </footer>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getAuth, GoogleAuthProvider, signInWithPopup }
+      from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+    document.getElementById("year").textContent = String(new Date().getFullYear());
+
+    const firebaseConfig = {{ firebase_config_json | safe }};
+    const fbApp = initializeApp(firebaseConfig);
+    const auth = getAuth(fbApp);
+    const provider = new GoogleAuthProvider();
+
+    function qs(name) {
+      const u = new URL(window.location.href);
+      return u.searchParams.get(name) || "";
+    }
+
+    async function sessionLogin(idToken) {
+      const res = await fetch("/auth/sessionLogin", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ idToken })
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || ("HTTP " + res.status));
+      }
+    }
+
+    const btn = document.getElementById("googleBtn");
+    const errEl = document.getElementById("err");
+
+    btn.addEventListener("click", async () => {
+      errEl.textContent = "";
+
+      const originalHTML = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = "Signing in...";
+
+      try {
+        const result = await signInWithPopup(auth, provider);
+        const idToken = await result.user.getIdToken(true);
+
+        await sessionLogin(idToken);
+
+        const next = qs("next") || "{{ base }}";
+        window.location.href = next;
+      } catch (e) {
+        errEl.textContent = String(e && e.message ? e.message : e);
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+      }
+    });
+  </script>
+</body>
+</html>
