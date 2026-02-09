@@ -5,11 +5,12 @@ import base64
 import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
-from urllib.parse import unquote, quote
+from urllib.parse import quote, unquote
 from typing import Optional, Dict, Any
 from http.cookies import SimpleCookie
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from math import isfinite
 
 import pandas as pd
 from fastapi import FastAPI, Request
@@ -28,10 +29,8 @@ from kiteconnect import KiteConnect, KiteTicker
 import firebase_admin
 from firebase_admin import credentials, auth as fb_auth, firestore
 
-
 # ------------------- MOUNT PATH -------------------
 BASE = "/dash/"  # Browser URL: https://host/dash/
-
 
 # ------------------- FIREBASE (Web config used on /login) -------------------
 FIREBASE_WEB_CONFIG = {
@@ -55,8 +54,6 @@ def init_firebase_admin():
       1) FIREBASE_SERVICE_ACCOUNT_B64  (recommended on Render)
       2) FIREBASE_SERVICE_ACCOUNT_JSON (raw JSON string)
       3) FIREBASE_SERVICE_ACCOUNT_PATH (path to existing JSON on server)
-
-    IMPORTANT: we do NOT default to 'service.json' to avoid Render FileNotFoundError.
     """
     if firebase_admin._apps:
         return
@@ -266,7 +263,6 @@ SECTOR_DEFINITIONS = {
 }
 ALL_SYMBOLS = sorted(set(sum(SECTOR_DEFINITIONS.values(), [])))
 
-
 # ------------------- KITE INIT -------------------
 kite = KiteConnect(api_key=API_KEY)
 kite.set_access_token(ACCESS_TOKEN)
@@ -277,7 +273,6 @@ ins = ins[ins["tradingsymbol"].isin(ALL_SYMBOLS)].copy()
 symbol_to_token = dict(zip(ins["tradingsymbol"], ins["instrument_token"]))
 symbol_to_name = dict(zip(ins["tradingsymbol"], ins["name"])) if "name" in ins.columns else {s: "" for s in ins["tradingsymbol"].tolist()}
 TOKENS = sorted(symbol_to_token.values())
-
 
 # ------------------- LIVE STATE (ticks) -------------------
 LOCK = threading.Lock()
@@ -296,7 +291,6 @@ HOT_WINDOW_SEC = 15 * 60
 HOT_SAMPLE_SEC = 5
 HOT_HISTORY: Dict[int, deque] = {}  # token -> deque[(epoch, ltp, cumvol)]
 HOT_HISTORY_MAX_SEC = HOT_WINDOW_SEC + 5 * 60  # keep some extra buffer
-
 
 # ------------------- DAILY STATS (RFactor baselines) -------------------
 LOOKBACK_SESSIONS = 20
@@ -423,7 +417,7 @@ def seed_daily_stats_once(per_req_sleep: float = 0.35):
 
 def compute_rfactor_row_for_token(token: int):
     """
-    RFactor magnitude is based on move SINCE TODAY OPEN:
+    RFactor magnitude based on move since TODAY OPEN:
       pct_open = (LTP - Open)/Open * 100
 
     Baseline for move is avg abs(open->close %) over last 20 days.
@@ -479,7 +473,7 @@ def compute_rfactor_row_for_token(token: int):
         "ltp": ltp,
         "prev_close": prev_close,
         "day_open": day_open,
-        "vol_today": vol_today,  # <-- added for tables
+        "vol_today": vol_today,
     }
 
 
@@ -531,7 +525,7 @@ def _compute_hot_row_for_token(token: int):
     return {"ret15": ret15, "vol15": vol15, "rvol15": rvol15, "score": score}
 
 
-# ------------------- TABLE ROW BUILDERS (UPDATED to 4 columns) -------------------
+# ------------------- TABLE ROW BUILDERS (4 columns) -------------------
 def top_gainers_losers_rfactor_rows(n: int = 15):
     """
     Columns: Symbol | %Change (since open) | RFactor | Vol (today)
@@ -655,6 +649,116 @@ def sector_rows_sorted_by_rfactor(sector: str):
         return []
     df = df.sort_values("RFactor", ascending=False, na_position="last")
     return df.to_dict("records")
+
+
+# ------------------- DIALS: SENTIMENT + PCR (proxy) -------------------
+def compute_market_sentiment_and_pcr_proxy():
+    """
+    Sentiment (breadth) based on % change since open:
+      adv/dec/unch + score = (adv-dec)/total in [-1..+1]
+
+    PCR here is a proxy (NOT true options PCR):
+      UpVol/DownVol using DAY_VOL grouped by stock direction vs open.
+    """
+    adv = dec = unch = 0
+    up_vol = 0.0
+    down_vol = 0.0
+
+    for tok in TOKENS:
+        ltp = LAST_PRICE.get(tok)
+        vol = DAY_VOL.get(tok)
+        ohlc = LAST_OHLC.get(tok) or {}
+        op = ohlc.get("open")
+
+        if ltp is None or op is None:
+            continue
+
+        try:
+            opf = float(op)
+            ltp = float(ltp)
+        except Exception:
+            continue
+
+        if opf <= 0 or ltp <= 0:
+            continue
+
+        pct_open = (ltp - opf) / opf * 100.0
+
+        if pct_open > 0:
+            adv += 1
+            if vol is not None:
+                up_vol += float(vol)
+        elif pct_open < 0:
+            dec += 1
+            if vol is not None:
+                down_vol += float(vol)
+        else:
+            unch += 1
+
+    total = adv + dec + unch
+    score = (adv - dec) / total if total > 0 else 0.0
+
+    if score >= 0.20:
+        label = "BULLISH"
+    elif score <= -0.20:
+        label = "BEARISH"
+    else:
+        label = "NEUTRAL"
+
+    eps = 1e-9
+    pcr = (up_vol / (down_vol + eps)) if (up_vol > 0 or down_vol > 0) else 1.0
+    if not isfinite(pcr) or pcr < 0:
+        pcr = 1.0
+
+    if pcr >= 1.40:
+        pcr_label = "STRONG BUY"
+    elif pcr >= 1.10:
+        pcr_label = "BUY"
+    elif pcr >= 0.90:
+        pcr_label = "NEUTRAL"
+    elif pcr >= 0.60:
+        pcr_label = "SELL"
+    else:
+        pcr_label = "STRONG SELL"
+
+    return {
+        "adv": adv, "dec": dec, "unch": unch, "total": total,
+        "score": float(score), "label": label,
+        "up_vol": float(up_vol), "down_vol": float(down_vol),
+        "pcr": float(pcr), "pcr_label": pcr_label,
+    }
+
+
+def dial_component(prefix: str, title: str):
+    """
+    HTML dial. Needle rotation is controlled via CSS variable --rot.
+    Make sure your assets/theme.css includes the dial styles.
+    """
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Div([html.Div(className="dial-arc")], className="dial-arc-clip"),
+                            html.Div(id=f"{prefix}-needle", className="dial-needle", style={"--rot": "0deg"}),
+                            html.Div(className="dial-center"),
+
+                            html.Div(["STRONG", html.Br(), "SELL"], className="dial-label dial-ss"),
+                            html.Div("SELL", className="dial-label dial-s"),
+                            html.Div("NEUTRAL", className="dial-label dial-n"),
+                            html.Div("BUY", className="dial-label dial-b"),
+                            html.Div(["STRONG", html.Br(), "BUY"], className="dial-label dial-sb"),
+                        ],
+                        className="dial-arc-wrap",
+                    ),
+                    html.Div(title, className="dial-title"),
+                    html.Div("—", id=f"{prefix}-sub", className="dial-sub"),
+                ],
+                className="dial-card",
+            )
+        ]
+    )
 
 
 # ------------------- BACKGROUND TICKER -------------------
@@ -865,28 +969,51 @@ def locked_page():
 def sectors_page():
     # ---- 4 columns only (no horizontal scroll) ----
     four_cols = [
-        {"field": "Symbol", "headerName": "Stock", "cellRenderer": "SymbolCell",
-         "minWidth": 110, "flex": 1},
-
-        {"field": "%Change", "headerName": "%Change", "type": "rightAligned",
-         "valueFormatter": {"function": "fmtPct(params.value)"},
-         "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"},
-         "minWidth": 90, "flex": 1},
-
-        {"field": "RFactor", "headerName": "RFactor", "type": "rightAligned",
-         "valueFormatter": {"function": "fmt2(params.value)"},
-         "minWidth": 90, "flex": 1},
-
-        {"field": "Vol", "headerName": "Vol", "type": "rightAligned",
-         "valueFormatter": {"function": "fmtInt(params.value)"},
-         "minWidth": 90, "flex": 1},
+        {
+            "field": "Symbol",
+            "headerName": "Stock",
+            "cellRenderer": "SymbolCell",
+            "minWidth": 130,
+            "flex": 1,
+            "headerClass": "hdr-stock",
+            "cellClass": "cell-stock",
+        },
+        {
+            "field": "%Change",
+            "headerName": "%Chg",
+            "type": "rightAligned",
+            "minWidth": 95,
+            "flex": 1,
+            "headerClass": "hdr-pct",
+            "cellClass": "cell-num cell-pct",
+            "cellRenderer": "PctPill",
+        },
+        {
+            "field": "RFactor",
+            "headerName": "RFactor",
+            "type": "rightAligned",
+            "minWidth": 95,
+            "flex": 1,
+            "headerClass": "hdr-rf",
+            "cellClass": "cell-num cell-rf",
+            "cellRenderer": "RfactorPill",
+        },
+        {
+            "field": "Vol",
+            "headerName": "Vol",
+            "type": "rightAligned",
+            "minWidth": 110,
+            "flex": 1,
+            "headerClass": "hdr-vol",
+            "cellClass": "cell-num cell-vol",
+            "cellRenderer": "VolPill",
+        },
     ]
 
     grid_opts = {
         "getRowId": {"function": "params.data.Symbol"},
         "alwaysShowVerticalScroll": True,
         "animateRows": True,
-        # fit columns to grid width (prevents horizontal scroll)
         "onGridReady": {"function": "params.api.sizeColumnsToFit();"},
         "onGridSizeChanged": {"function": "params.api.sizeColumnsToFit();"},
     }
@@ -895,12 +1022,18 @@ def sectors_page():
         [
             dcc.Interval(id="refresh_sectors", interval=2000, n_intervals=0),
 
-            html.H4("Sectors", className="page-title"),
-            html.Div(id="sector-bars", className="sector-bars-wrap"),
-            html.Div("Sectors sorted by AVG DirR (strength). Top tables sorted by RFactor.", className="hint"),
+            # 1) DIALS (top)
+            dbc.Row(
+                [
+                    dbc.Col(dial_component("sentiment", "Sentimental Dial"), md=6),
+                    dbc.Col(dial_component("pcr", "PCR"), md=6),
+                ],
+                className="g-2 dials-row",
+            ),
 
             html.Hr(),
 
+            # 2) TOP GAINERS / LOSERS (below dials)
             dbc.Row(
                 [
                     dbc.Col(
@@ -939,6 +1072,17 @@ def sectors_page():
 
             html.Hr(),
 
+            # 3) SECTORS (after top tables)
+            html.H4("Sectors", className="page-title"),
+            html.Div(id="sector-bars", className="sector-bars-wrap"),
+            html.Div(
+                "Sectors sorted by AVG DirR (strength). Top tables sorted by RFactor.",
+                className="hint"
+            ),
+
+            html.Hr(),
+
+            # 4) HOT NOW (last)
             dbc.Row(
                 [
                     dbc.Col(
@@ -1161,6 +1305,39 @@ def render_sector_bars(_):
         )
 
     return children
+
+
+# ---- NEW: update the two dials ----
+@dash_app.callback(
+    Output("sentiment-needle", "style"),
+    Output("sentiment-sub", "children"),
+    Output("pcr-needle", "style"),
+    Output("pcr-sub", "children"),
+    Input("refresh_sectors", "n_intervals"),
+)
+def update_dials(_):
+    decoded = get_user_from_dash_request()
+    uid = get_uid(decoded)
+    if not uid or not get_subscription(uid).get("subscribed"):
+        return {"--rot": "0deg"}, "—", {"--rot": "0deg"}, "—"
+
+    with LOCK:
+        m = compute_market_sentiment_and_pcr_proxy()
+
+    # Sentiment needle: score [-1..+1] -> angle [-90..+90]
+    score = float(m["score"])
+    sent_angle = max(-90.0, min(90.0, score * 90.0))
+    sent_style = {"--rot": f"{sent_angle:.2f}deg"}
+    sent_sub = f'{m["label"]} • {score:+.2f} • {m["adv"]}/{m["dec"]}'
+
+    # PCR proxy needle: clamp pcr into [0..2] and map to [-90..+90] around neutral=1
+    pcr = float(m["pcr"])
+    pcr_clamped = max(0.0, min(2.0, pcr))
+    pcr_angle = (pcr_clamped - 1.0) * 90.0
+    pcr_style = {"--rot": f"{pcr_angle:.2f}deg"}
+    pcr_sub = f'{m["pcr_label"]} • {pcr:.2f}'
+
+    return sent_style, sent_sub, pcr_style, pcr_sub
 
 
 @dash_app.callback(
