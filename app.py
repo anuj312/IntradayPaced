@@ -1,3 +1,14 @@
+# app.py  (NO AUTH • NO FIREBASE • NO SUBSCRIPTIONS)
+#
+# Open dashboard at: http://127.0.0.1:8000/dash/
+#
+# Required env:
+#   KITE_API_KEY
+#   KITE_ACCESS_TOKEN
+#
+# Run (single worker recommended):
+#   uvicorn app:app --reload --workers 1
+
 import os
 import time
 import threading
@@ -33,17 +44,15 @@ log = logging.getLogger("turbotrades")
 # =============================================================================
 # CONFIG
 # =============================================================================
-BASE = "/dash/"  # dashboard base URL
-
+BASE = "/dash/"
 IST = ZoneInfo("Asia/Kolkata")
 
 API_KEY = os.getenv("KITE_API_KEY", "").strip()
 ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN", "").strip()
 if not API_KEY or not ACCESS_TOKEN:
-    raise RuntimeError("Missing KITE_API_KEY / KITE_ACCESS_TOKEN env vars.")
+    raise RuntimeError("Missing KITE_API_KEY / KITE_ACCESS_TOKEN environment variables.")
 
-kite = KiteConnect(api_key=API_KEY)
-kite.set_access_token(ACCESS_TOKEN)
+SEED_SLEEP_SEC = float(os.getenv("SEED_SLEEP_SEC", "0.35"))
 
 LOOKBACK_SESSIONS = 20
 
@@ -53,7 +62,14 @@ HOT_HISTORY_MAX_SEC = HOT_WINDOW_SEC + 5 * 60
 
 
 # =============================================================================
-# SYMBOLS / SECTORS
+# KITE INIT
+# =============================================================================
+kite = KiteConnect(api_key=API_KEY)
+kite.set_access_token(ACCESS_TOKEN)
+
+
+# =============================================================================
+# SECTORS / SYMBOLS
 # =============================================================================
 SECTOR_DEFINITIONS = {
     "METAL": ["ADANIENT","HINDALCO","JSWSTEEL","HINDZINC","APLAPOLLO","TATASTEEL","JINDALSTEL","VEDL","SAIL","NATIONALUM","NMDC"],
@@ -61,9 +77,9 @@ SECTOR_DEFINITIONS = {
     "REALTY": ["PHOENIXLTD","GODREJPROP","LODHA","OBEROIRLTY","DLF","PRESTIGE","NBCC","NCC"],
     "ENERGY": ["CGPOWER","RELIANCE","GMRAIRPORT","JSWENERGY","ONGC","POWERGRID","BLUESTARCO","COALINDIA","SUZLON","IREDA",
                "IOC","IGL","TATAPOWER","INOXWIND","MAZDOCK","PETRONET","SOLARINDS","ADANIGREEN","NTPC","OIL","BDL","BPCL",
-               "NHPC","POWERINDIA","ADANIENSOL","TORNTPOWER"],
+               "NHPC","POWERINDIA","ADANIENSOL","TORRENTPOWER"],
     "AUTO": ["BOSCHLTD","TIINDIA","HEROMOTOCO","M&M","EICHERMOT","EXIDEIND","BAJAJ-AUTO","ASHOKLEY","MARUTI","TITAGARH",
-             "TVSMOTOR","MOTHERSON","SONACOMS","UNOMINDA","TMPV","BHARATFORG"],
+             "TVSMOTOR","MOTHERSON","SONACOMS","UNOMINDA","TATAMOTORS","BHARATFORG"],
     "IT": ["KAYNES","TATATECH","LTIM","CYIENT","MPHASIS","TCS","CAMS","OFSS","HFCL","TECHM","TATAELXSI","HCLTECH","WIPRO",
            "KPITTECH","COFORGE","PERSISTENT","INFY"],
     "PHARMA": ["CIPLA","ALKEM","BIOCON","DRREDDY","MANKIND","TORNTPHARM","ZYDUSLIFE","DIVISLAB","LUPIN","PPLPHARMA",
@@ -85,13 +101,11 @@ SECTOR_DEFINITIONS = {
                "BHARATFORG","FEDERALBNK","INDHOTEL","COFORGE","ASHOKLEY","PERSISTENT","UPL","GODREJPROP","AUROPHARMA","AUBANK",
                "ASTRAL","HDFCAMC","JUBLFOOD","PIIND"],
 }
-
 ALL_SYMBOLS = sorted(set(sum(SECTOR_DEFINITIONS.values(), [])))
 
 # Instruments
 ins = pd.DataFrame(kite.instruments("NSE"))
 ins = ins[ins["tradingsymbol"].isin(ALL_SYMBOLS)].copy()
-
 symbol_to_token: Dict[str, int] = dict(zip(ins["tradingsymbol"], ins["instrument_token"]))
 symbol_to_name: Dict[str, str] = (
     dict(zip(ins["tradingsymbol"], ins["name"])) if "name" in ins.columns else {s: "" for s in ALL_SYMBOLS}
@@ -221,7 +235,7 @@ def compute_20d_daily_stats_and_eod(token: int, days_back: int = 220) -> Dict[st
     df["d"] = df["date"].dt.date
     today_ist = datetime.now(IST).date()
 
-    # During market, today's daily candle may be partial -> use previous completed day
+    # During market, today's daily candle can be partial -> use previous completed day
     if market_is_open_ist() and df.iloc[-1]["d"] == today_ist:
         df = df.iloc[:-1].copy()
 
@@ -254,7 +268,7 @@ def compute_20d_daily_stats_and_eod(token: int, days_back: int = 220) -> Dict[st
     }
 
 
-def seed_daily_stats_once(per_req_sleep: float = 0.35):
+def seed_daily_stats_once(per_req_sleep: float = SEED_SLEEP_SEC):
     global DAILY_SEED_STARTED, DAILY_SEED_DONE, DAILY_SEED_ERRORS
     if DAILY_SEED_STARTED:
         return
@@ -528,6 +542,9 @@ def sector_rows_sorted_by_rfactor(sector: str):
     return df.sort_values("RFactor", ascending=False, na_position="last").to_dict("records")
 
 
+# =============================================================================
+# DIALS — SENTIMENT + PCR (proxy)
+# =============================================================================
 def compute_market_sentiment_and_pcr_proxy():
     adv = dec = unch = 0
     up_vol = 0.0
@@ -542,18 +559,24 @@ def compute_market_sentiment_and_pcr_proxy():
         if op is None:
             continue
 
-        opf = float(op)
-        if opf <= 0:
+        try:
+            opf = float(op)
+            ltp = float(ltp)
+            volf = float(vol) if vol is not None else 0.0
+        except Exception:
+            continue
+
+        if opf <= 0 or ltp <= 0:
             continue
 
         pct_open = (ltp - opf) / opf * 100.0
 
         if pct_open > 0:
             adv += 1
-            up_vol += float(vol)
+            up_vol += volf
         elif pct_open < 0:
             dec += 1
-            down_vol += float(vol)
+            down_vol += volf
         else:
             unch += 1
 
@@ -567,7 +590,8 @@ def compute_market_sentiment_and_pcr_proxy():
     else:
         label = "NEUTRAL"
 
-    pcr = (up_vol / (down_vol + 1e-9)) if (up_vol > 0 or down_vol > 0) else 1.0
+    eps = 1e-9
+    pcr = (up_vol / (down_vol + eps)) if (up_vol > 0 or down_vol > 0) else 1.0
     if not isfinite(pcr) or pcr < 0:
         pcr = 1.0
 
@@ -582,7 +606,12 @@ def compute_market_sentiment_and_pcr_proxy():
     else:
         pcr_label = "STRONG SELL"
 
-    return {"adv": adv, "dec": dec, "score": float(score), "label": label, "pcr": float(pcr), "pcr_label": pcr_label}
+    return {
+        "adv": adv, "dec": dec, "unch": unch, "total": total,
+        "score": float(score), "label": label,
+        "up_vol": float(up_vol), "down_vol": float(down_vol),
+        "pcr": float(pcr), "pcr_label": pcr_label,
+    }
 
 
 # =============================================================================
@@ -642,7 +671,7 @@ def start_ticker_once():
 
 
 # =============================================================================
-# DASH APP
+# DASH APP (mounted at /dash)
 # =============================================================================
 dash_app = dash.Dash(
     __name__,
@@ -655,6 +684,7 @@ dash_app = dash.Dash(
 server = dash_app.server
 
 
+# ------------------- UI Components -------------------
 def dial_component(prefix: str, title: str):
     return html.Div(
         html.Div(
@@ -829,11 +859,13 @@ def sector_page(sector: str):
     )
 
 
+# ------------------- Dash Layout -------------------
 dash_app.layout = dbc.Container(
     fluid=True,
     children=[
         dcc.Location(id="url"),
         dcc.Interval(id="top_refresh", interval=1000, n_intervals=0),
+
         html.Div(
             dbc.Row(
                 [
@@ -844,14 +876,17 @@ dash_app.layout = dbc.Container(
             ),
             className="topbar-wrap",
         ),
+
         html.Div(id="app-body"),
     ],
 )
 
 
+# ------------------- Dash Routing -------------------
 @dash_app.callback(Output("app-body", "children"), Input("url", "pathname"))
 def route(pathname):
     pn = (pathname or "").strip() or "/"
+
     if pn in ("/", "/dash", "/dash/", BASE):
         return sectors_page()
 
@@ -862,6 +897,7 @@ def route(pathname):
     return sectors_page()
 
 
+# ------------------- TOP HEADER STATS (ONLY PLACE SEEDING IS SHOWN) -------------------
 @dash_app.callback(Output("top-stats", "children"), Input("top_refresh", "n_intervals"))
 def update_top_stats(_):
     updated_str = datetime.now(IST).strftime("%H:%M:%S")
@@ -871,35 +907,23 @@ def update_top_stats(_):
         tps = _get_tps()
         tot = TOTAL_TICKS
 
-        # seeding status
         d_done = DAILY_SEED_DONE
         d_done_n = DAILY_SEED_PROGRESS.get("done", 0)
         d_total = DAILY_SEED_PROGRESS.get("total", 0)
         d_err = DAILY_SEED_ERRORS
 
-        # optional EOD date display (if you keep EOD_SNAPSHOT)
         eod_date = None
         if EOD_SNAPSHOT:
             any_tok = next(iter(EOD_SNAPSHOT.keys()))
             eod_date = EOD_SNAPSHOT[any_tok].get("date")
 
     chips = [
-        dbc.Badge(
-            "Offline" if offline else "Live",
-            color=("danger" if offline else "success"),
-            className="stat-badge",
-        ),
+        dbc.Badge("Offline" if offline else "Live", color=("danger" if offline else "success"), className="stat-badge"),
     ]
 
-    # Show seeding badge ONLY next to Live/Offline (header)
+    # Show seeding ONLY here, beside Live/Offline
     if not d_done:
-        chips.append(
-            dbc.Badge(
-                f"Seeding {d_done_n}/{d_total} (err {d_err})",
-                color="warning",
-                className="stat-badge stat-badge-seed",
-            )
-        )
+        chips.append(dbc.Badge(f"Seeding {d_done_n}/{d_total} (err {d_err})", color="warning", className="stat-badge"))
 
     chips += [
         html.Div(f"TPS {tps:.1f}", className="stat-chip"),
@@ -913,6 +937,7 @@ def update_top_stats(_):
     return html.Div(chips, className="top-stats-wrap")
 
 
+# ------------------- Sector Bars -------------------
 @dash_app.callback(Output("sector-bars", "children"), Input("refresh_sectors", "n_intervals"))
 def render_sector_bars(_):
     with LOCK:
@@ -945,6 +970,7 @@ def render_sector_bars(_):
     return children
 
 
+# ------------------- DIALS (Exact sentiment + PCR proxy mapping) -------------------
 @dash_app.callback(
     Output("sentiment-needle", "style"),
     Output("sentiment-sub", "children"),
@@ -956,11 +982,13 @@ def update_dials(_):
     with LOCK:
         m = compute_market_sentiment_and_pcr_proxy()
 
+    # Sentiment: score [-1..+1] -> angle [-90..+90]
     score = float(m["score"])
     sent_angle = max(-90.0, min(90.0, score * 90.0))
     sent_style = {"--rot": f"{sent_angle:.2f}deg"}
     sent_sub = f'{m["label"]} • {score:+.2f} • {m["adv"]}/{m["dec"]}'
 
+    # PCR proxy: clamp [0..2], map 0->-90, 1->0, 2->+90
     pcr = float(m["pcr"])
     pcr_clamped = max(0.0, min(2.0, pcr))
     pcr_angle = (pcr_clamped - 1.0) * 90.0
@@ -970,6 +998,7 @@ def update_dials(_):
     return sent_style, sent_sub, pcr_style, pcr_sub
 
 
+# ------------------- Grids -------------------
 @dash_app.callback(
     Output("top15-gainers-grid", "rowData"),
     Output("top15-losers-grid", "rowData"),
@@ -1019,7 +1048,7 @@ THEME_PATH = HERE / "assets" / "theme.css"
 
 @app.on_event("startup")
 def _startup():
-    seed_daily_stats_once(per_req_sleep=0.35)
+    seed_daily_stats_once(per_req_sleep=SEED_SLEEP_SEC)
     start_ticker_once()
 
 
@@ -1056,5 +1085,5 @@ def root():
     return RedirectResponse(url="/dash/", status_code=307)
 
 
-# Mount Dash app (no auth)
+# Mount Dash (no auth)
 app.mount("/dash", WSGIMiddleware(server))
