@@ -1,21 +1,21 @@
 /* ==========================================================================
-   TurboTrades — Ultra Premium Theme
+   TurboTrades — ULTRA PREMIUM (MONOCHROME / PILL-LESS) + GREEN/RED %CHANGE
    File: assets/theme.css
 
-   Covers:
-   - App background + typography
-   - Topbar (nav + stats)
-   - Sector bars
-   - AG Grid (Top Gainers/Losers + Hot Now + Sector stocks)
-   - Premium value pills for %Chg / RFactor / Vol
-   - PERFECTLY aligned Sentiment/PCR Dials
+   What you asked:
+   - Ultra premium glass UI
+   - Remove “bracket / pill” look from gainers/losers values
+   - Show +ve green, -ve red (for %Change)
+   - Keep other columns monochrome (RFactor/Vol)
+   - Works with your JS renderers that output:
+       <span class="val-pill up|down|neutral|rf|vol">...</span>
    ========================================================================== */
 
 /* ----------------------------
    Tokens
 ---------------------------- */
 :root{
-  --bg0: #070A12;
+  --bg0: #060812;
   --bg1: #0B1222;
 
   --panel0: rgba(255,255,255,0.070);
@@ -27,17 +27,13 @@
   --text:  rgba(255,255,255,0.92);
   --muted: rgba(255,255,255,0.68);
 
-  --good: #22C55E;
-  --bad:  #FB7185;
-
-  --accent:  #7C5CFF;
-  --accent2: #22D3EE;
+  --good: rgba(34,197,94,0.96);
+  --bad:  rgba(251,113,133,0.96);
 
   --shadow:  0 20px 70px rgba(0,0,0,0.60);
   --shadow2: 0 14px 32px rgba(0,0,0,0.48);
 
   --radius-lg: 22px;
-  --radius-md: 16px;
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
 }
@@ -51,11 +47,15 @@ body{
   margin: 0;
   color: var(--text);
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+
   background:
     radial-gradient(900px 520px at 14% 8%, rgba(124,92,255,0.18), transparent 60%),
     radial-gradient(900px 520px at 88% 10%, rgba(34,211,238,0.12), transparent 60%),
     radial-gradient(1200px 700px at 50% 110%, rgba(215,181,109,0.08), transparent 60%),
     linear-gradient(180deg, var(--bg0), var(--bg1));
+
   overflow-x: hidden;
 }
 
@@ -74,9 +74,10 @@ body::before{
 
 a{ color: rgba(255,255,255,0.92); }
 a:hover{ color: #ffffff; }
+hr{ border-color: rgba(255,255,255,0.08) !important; opacity: 1; }
 
 /* ----------------------------
-   Sticky topbar (nav + stats)
+   Sticky topbar
 ---------------------------- */
 .topbar-wrap{
   position: sticky;
@@ -85,7 +86,7 @@ a:hover{ color: #ffffff; }
   padding: 10px 10px;
   margin: 0 0 10px;
   border-bottom: 1px solid var(--border2);
-  background: linear-gradient(180deg, rgba(7,10,18,0.92), rgba(7,10,18,0.55));
+  background: linear-gradient(180deg, rgba(6,8,18,0.92), rgba(6,8,18,0.55));
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
@@ -104,7 +105,7 @@ a:hover{ color: #ffffff; }
   background: rgba(255,255,255,0.045);
   box-shadow: var(--shadow2);
   font-weight: 900;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.25px;
   color: var(--muted);
   user-select: none;
 }
@@ -169,43 +170,31 @@ a:hover{ color: #ffffff; }
 }
 
 /* ==========================================================================
-   SECTOR BARS
+   Sector bars
    ========================================================================== */
 .sector-bars-wrap{
   display: flex;
   align-items: flex-end;
   gap: 12px;
   overflow-x: auto;
-  padding: 12px 6px 6px;
+  padding: 12px 8px 8px;
   border: 1px solid var(--border2);
   border-radius: var(--radius-lg);
   background: linear-gradient(180deg, var(--panel0), var(--panel1));
   box-shadow: var(--shadow);
 }
 
-.sector-bars-wrap::-webkit-scrollbar{ height: 10px; }
-.sector-bars-wrap::-webkit-scrollbar-thumb{
-  background: rgba(255,255,255,0.12);
-  border-radius: 999px;
-}
-.sector-bars-wrap::-webkit-scrollbar-track{
-  background: rgba(255,255,255,0.04);
-  border-radius: 999px;
-}
-
-.sector-link{
-  text-decoration: none;
-  color: inherit;
-  flex: 0 0 auto;
-}
+.sector-link{ text-decoration: none; color: inherit; flex: 0 0 auto; }
 
 .sector-bar-card{
-  width: 86px;
-  min-height: 190px;
+  width: 88px;
+  min-height: 198px;
   border-radius: 18px;
   border: 1px solid rgba(255,255,255,0.12);
   background: rgba(0,0,0,0.18);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.07);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.07),
+    0 22px 60px rgba(0,0,0,0.55);
   padding: 10px;
   display: flex;
   flex-direction: column;
@@ -215,8 +204,8 @@ a:hover{ color: #ffffff; }
 }
 
 .sector-bar-card:hover{
-  transform: translateY(-1px);
-  filter: brightness(1.05);
+  transform: translateY(-2px);
+  filter: brightness(1.06);
 }
 
 .bar-value{
@@ -234,12 +223,11 @@ a:hover{ color: #ffffff; }
 }
 
 .bar-green{
-  background: linear-gradient(180deg, rgba(34,197,94,0.95), rgba(34,197,94,0.40));
+  background: linear-gradient(180deg, rgba(34,197,94,0.98), rgba(34,197,94,0.35));
   box-shadow: 0 14px 28px rgba(34,197,94,0.14);
 }
-
 .bar-red{
-  background: linear-gradient(180deg, rgba(251,113,133,0.55), rgba(251,113,133,0.95));
+  background: linear-gradient(180deg, rgba(251,113,133,0.55), rgba(251,113,133,0.98));
   box-shadow: 0 14px 28px rgba(251,113,133,0.14);
 }
 
@@ -252,67 +240,21 @@ a:hover{ color: #ffffff; }
 }
 
 /* ==========================================================================
-   ULTRA PREMIUM TABLES (AG GRID)
+   Grid wrapper
    ========================================================================== */
-
-/* Section headings above each grid (your H6 titles) */
-.page-wrap h6{
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-
-  margin: 6px 0 12px;
-  padding: 10px 12px;
-
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.14);
-  background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.03));
-  box-shadow: 0 18px 44px rgba(0,0,0,0.45);
-
-  font-weight: 950;
-  letter-spacing: 0.45px;
-  text-transform: uppercase;
-  font-size: 12px;
-  color: rgba(255,255,255,0.86);
-}
-
-.page-wrap h6::before{
-  content: "";
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, rgba(124,92,255,0.95), rgba(34,211,238,0.70));
-  box-shadow: 0 0 0 5px rgba(124,92,255,0.14);
-}
-
-/* Grid wrapper (card) */
 .grid-wrap{
   border-radius: var(--radius-lg);
   overflow: hidden;
   border: 1px solid rgba(255,255,255,0.12);
+  position: relative;
   box-shadow:
     0 26px 80px rgba(0,0,0,0.58),
     inset 0 1px 0 rgba(255,255,255,0.08);
 }
 
-/* Glass background behind AG Grid */
-.ag-theme-alpine-dark .ag-root-wrapper{
-  border: none !important;
-  background:
-    radial-gradient(900px 260px at 20% 0%,
-      rgba(124,92,255,0.10),
-      rgba(0,0,0,0.0) 60%
-    ),
-    radial-gradient(900px 260px at 90% 10%,
-      rgba(34,211,238,0.08),
-      rgba(0,0,0,0.0) 60%
-    ),
-    linear-gradient(180deg, rgba(255,255,255,0.065), rgba(255,255,255,0.02));
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-}
-
-/* AG Grid theme variables */
+/* ==========================================================================
+   AG Grid Theme
+   ========================================================================== */
 .ag-theme-alpine-dark{
   --ag-font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
   --ag-font-size: 13px;
@@ -327,45 +269,31 @@ a:hover{ color: #ffffff; }
   --ag-odd-row-background-color: rgba(255,255,255,0.02);
   --ag-row-hover-color: rgba(255,255,255,0.055);
 
-  --ag-selected-row-background-color: rgba(124,92,255,0.14);
+  --ag-selected-row-background-color: rgba(124,92,255,0.12);
   --ag-range-selection-border-color: rgba(124,92,255,0.70);
 
-  --ag-header-height: 42px;
-  --ag-row-height: 42px;
+  --ag-header-height: 44px;
+  --ag-row-height: 40px;
 }
 
-/* Header styling */
+.ag-theme-alpine-dark .ag-root-wrapper{
+  border: none !important;
+  background:
+    radial-gradient(1000px 300px at 16% 0%, rgba(124,92,255,0.10), rgba(0,0,0,0.0) 60%),
+    radial-gradient(900px 280px at 92% 12%, rgba(34,211,238,0.08), rgba(0,0,0,0.0) 60%),
+    linear-gradient(180deg, rgba(255,255,255,0.060), rgba(255,255,255,0.018));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
 .ag-theme-alpine-dark .ag-header{
   position: relative;
-  background: linear-gradient(180deg, rgba(7,10,18,0.92), rgba(7,10,18,0.55)) !important;
+  background: linear-gradient(180deg, rgba(6,8,18,0.92), rgba(6,8,18,0.55)) !important;
   border-bottom: 1px solid rgba(255,255,255,0.10) !important;
 }
 
-.ag-theme-alpine-dark .ag-header::after{
-  content:"";
-  position:absolute;
-  left:0; right:0; top:0;
-  height:2px;
-  background: linear-gradient(90deg,
-    rgba(124,92,255,0.80),
-    rgba(34,211,238,0.55),
-    rgba(34,197,94,0.45)
-  );
-  opacity: 0.55;
-  pointer-events:none;
-}
-
-.ag-theme-alpine-dark .ag-header-cell-label{
-  font-weight: 950;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.75);
-}
-
-/* Rows + cells */
 .ag-theme-alpine-dark .ag-row{
   border-bottom: 1px solid rgba(255,255,255,0.06);
-  transition: background 120ms ease;
 }
 
 .ag-theme-alpine-dark .ag-row:hover{
@@ -377,26 +305,31 @@ a:hover{ color: #ffffff; }
   padding-right: 12px;
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
+  display: flex;
+  align-items: center;
 }
 
-/* Premium scrollbars */
-.ag-theme-alpine-dark .ag-body-viewport::-webkit-scrollbar{ width: 10px; height: 10px; }
-.ag-theme-alpine-dark .ag-body-viewport::-webkit-scrollbar-thumb{
-  background: rgba(255,255,255,0.14);
-  border-radius: 999px;
-  border: 2px solid rgba(0,0,0,0.25);
-}
-.ag-theme-alpine-dark .ag-body-viewport::-webkit-scrollbar-track{
-  background: rgba(255,255,255,0.05);
-  border-radius: 999px;
+.ag-theme-alpine-dark .ag-cell-value{
+  display: flex;
+  align-items: center;
+  width: 100%;
 }
 
-/* Keep classic pos/neg classes for any non-pill cells */
-.cell-pos{ color: var(--good) !important; font-weight: 950; }
-.cell-neg{ color: var(--bad)  !important; font-weight: 950; }
+/* Right align numeric columns when you set cellClass="cell-num" */
+.ag-theme-alpine-dark .ag-cell.cell-num .ag-cell-value{
+  justify-content: flex-end;
+}
+
+/* Built-in rightAligned columns alignment */
+.ag-theme-alpine-dark .ag-right-aligned-cell .ag-cell-value{
+  justify-content: flex-end !important;
+}
+.ag-theme-alpine-dark .ag-right-aligned-header .ag-header-cell-label{
+  justify-content: flex-end !important;
+}
 
 /* ==========================================================================
-   STOCK CELL (used by your JS renderers: .stock-cell .stock-sym .stock-name)
+   Stock cell styles (SymbolCell / StockCell)
    ========================================================================== */
 .stock-cell{
   display: flex;
@@ -412,11 +345,7 @@ a:hover{ color: #ffffff; }
   text-decoration: none;
   color: rgba(255,255,255,0.92);
 }
-
-.stock-sym:hover{
-  text-decoration: underline;
-  color: #fff;
-}
+.stock-sym:hover{ text-decoration: underline; color: #fff; }
 
 .stock-name{
   font-size: 12px;
@@ -429,85 +358,47 @@ a:hover{ color: #ffffff; }
 }
 
 /* ==========================================================================
-   ULTRA PREMIUM VALUE PILLS (works with PctPill / RfactorPill / VolPill)
+   REMOVE PILL / BRACKET LOOK (THIS IS THE KEY CHANGE)
+   - makes gainers/losers values look like premium plain text
    ========================================================================== */
+.ag-theme-alpine-dark .val-pill,
+.ag-theme-alpine-dark .val-pill.up,
+.ag-theme-alpine-dark .val-pill.down,
+.ag-theme-alpine-dark .val-pill.neutral,
+.ag-theme-alpine-dark .val-pill.rf,
+.ag-theme-alpine-dark .val-pill.vol{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  filter: none !important;
 
-/* Make AG Grid cell content layout friendly for pills */
-.ag-theme-alpine-dark .ag-cell-value{
-  display: flex;
-  align-items: center;
-  width: 100%;
-}
-
-.ag-theme-alpine-dark .ag-cell.cell-num .ag-cell-value{
-  justify-content: flex-end;
-}
-
-/* Premium pill base */
-.val-pill{
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-
-  min-width: 92px;
-  padding: 7px 10px;
-
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.14);
-
-  background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
-  box-shadow:
-    0 14px 30px rgba(0,0,0,0.38),
-    inset 0 1px 0 rgba(255,255,255,0.10);
+  padding: 0 !important;
+  min-width: 0 !important;
 
   font-family: var(--mono);
-  font-weight: 950;
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1;
-
+  font-weight: 950 !important;
+  font-size: 14px;
+  letter-spacing: 0.15px;
   white-space: nowrap;
-  color: rgba(255,255,255,0.88);
+
+  color: rgba(255,255,255,0.90) !important; /* default monochrome */
 }
 
-/* %Change (green/red) */
-.val-pill.up{
-  border-color: rgba(34,197,94,0.32);
-  background: linear-gradient(90deg, rgba(34,197,94,0.25), rgba(255,255,255,0.03) 70%);
-  color: rgba(236,255,245,0.98);
-  filter: drop-shadow(0 16px 30px rgba(34,197,94,0.12));
-}
+/* Only %Change gets green/red */
+.ag-theme-alpine-dark .val-pill.up{ color: var(--good) !important; }
+.ag-theme-alpine-dark .val-pill.down{ color: var(--bad) !important; }
 
-.val-pill.down{
-  border-color: rgba(251,113,133,0.34);
-  background: linear-gradient(90deg, rgba(251,113,133,0.22), rgba(255,255,255,0.03) 70%);
-  color: rgba(255,236,240,0.98);
-  filter: drop-shadow(0 16px 30px rgba(251,113,133,0.12));
-}
-
-.val-pill.neutral{
-  border-color: rgba(255,255,255,0.12);
-  color: rgba(255,255,255,0.78);
-}
-
-/* RFactor pill */
-.val-pill.rf{
-  border-color: rgba(124,92,255,0.30);
-  background: linear-gradient(90deg, rgba(124,92,255,0.22), rgba(255,255,255,0.03) 72%);
-  color: rgba(246,242,255,0.98);
-  filter: drop-shadow(0 16px 30px rgba(124,92,255,0.12));
-}
-
-/* Volume pill */
-.val-pill.vol{
-  border-color: rgba(34,211,238,0.28);
-  background: linear-gradient(90deg, rgba(34,211,238,0.18), rgba(255,255,255,0.03) 72%);
-  color: rgba(232,252,255,0.96);
-  filter: drop-shadow(0 16px 30px rgba(34,211,238,0.10));
-}
+/* (Optional) make neutral slightly muted */
+.ag-theme-alpine-dark .val-pill.neutral{ color: rgba(255,255,255,0.70) !important; }
 
 /* ==========================================================================
-   DIALS (Sentiment + PCR) — fixed geometry + premium green buy side
+   Sector page (id="grid") keep pos/neg cells colored
+   ========================================================================== */
+#grid .ag-cell.cell-pos{ color: var(--good) !important; font-weight: 950 !important; }
+#grid .ag-cell.cell-neg{ color: var(--bad) !important; font-weight: 950 !important; }
+
+/* ==========================================================================
+   DIALS (kept clean + premium)
    ========================================================================== */
 .dials-row{ margin: 6px 0 14px; }
 
@@ -520,12 +411,11 @@ a:hover{ color: #ffffff; }
   overflow: hidden;
 }
 
-/* Dial geometry */
 .dial-arc-wrap{
-  --dial-size: 360px;              /* full circle diameter */
+  --dial-size: 300px;
   --dial-radius: calc(var(--dial-size) * 0.5);
-  --dial-baseline: 30px;           /* baseline from bottom */
-  --label-box-h: 44px;
+  --dial-baseline: 24px;
+  --label-box-h: 38px;
 
   position: relative;
   width: min(560px, 100%);
@@ -533,15 +423,8 @@ a:hover{ color: #ffffff; }
   height: calc(var(--dial-radius) + var(--dial-baseline));
 }
 
-/* Clip top half */
-.dial-arc-clip{
-  position: relative;
-  width: 100%;
-  height: var(--dial-radius);
-  overflow: hidden;
-}
+.dial-arc-clip{ position: relative; width: 100%; height: var(--dial-radius); overflow: hidden; }
 
-/* Arc (premium layered) */
 .dial-arc{
   position: absolute;
   left: 50%;
@@ -553,50 +436,18 @@ a:hover{ color: #ffffff; }
   pointer-events: none;
 
   background:
-    radial-gradient(closest-side at 50% 34%,
-      rgba(255,255,255,0.22),
-      rgba(255,255,255,0.00) 58%
-    ),
-    radial-gradient(closest-side at 50% 62%,
-      rgba(0,0,0,0.00) 55%,
-      rgba(0,0,0,0.34) 100%
-    ),
     conic-gradient(
-      from 270deg,                      /* aligns 0..180 to TOP semicircle */
-      /* STRONG SELL */
-      #ff2d55 0deg 18deg,
-      #ff3b30 18deg 36deg,
-
-      /* SELL */
-      #ff7a7a 36deg 54deg,
-      #fb7185 54deg 72deg,
-
-      /* NEUTRAL */
-      #f8fafc 72deg 90deg,
-      #e5e7eb 90deg 108deg,
-
-      /* BUY (green) */
-      #5eead4 108deg 126deg,
-      #34d399 126deg 144deg,
-
-      /* STRONG BUY (green) */
-      #34d399 144deg 162deg,
-      #22c55e 162deg 180deg,
-
+      from 270deg,
+      #ff2d55 0deg 36deg,
+      #fb7185 36deg 72deg,
+      #e5e7eb 72deg 108deg,
+      #34d399 108deg 144deg,
+      #22c55e 144deg 180deg,
       rgba(0,0,0,0) 180deg 360deg
     );
-
-  box-shadow:
-    0 28px 80px rgba(0,0,0,0.55),
-    inset 0 0 0 1px rgba(255,255,255,0.10),
-    inset 0 1px 0 rgba(255,255,255,0.12);
-
-  filter:
-    drop-shadow(0 18px 34px rgba(34,197,94,0.14))
-    drop-shadow(0 18px 34px rgba(255,45,85,0.10));
+  opacity: 0.92;
 }
 
-/* Needle (pivot exactly on baseline) */
 .dial-needle{
   --rot: 0deg;
   position: absolute;
@@ -612,7 +463,6 @@ a:hover{ color: #ffffff; }
   pointer-events: none;
 }
 
-/* Hub */
 .dial-center{
   position: absolute;
   left: 50%;
@@ -623,80 +473,33 @@ a:hover{ color: #ffffff; }
   border-radius: 999px;
   background: #0b1222;
   border: 3px solid rgba(255,255,255,0.95);
-  box-shadow: 0 18px 36px rgba(0,0,0,0.55);
-  pointer-events: none;
 }
 
-/* Labels (aligned blocks) */
 .dial-label{
   position: absolute;
   height: var(--label-box-h);
-  line-height: 1.05;
-
   display: flex;
   align-items: center;
   justify-content: center;
-
   font-weight: 900;
   letter-spacing: 0.6px;
   color: rgba(255,255,255,0.92);
-  font-size: 14px;
+  font-size: 13px;
   text-transform: uppercase;
-
   user-select: none;
   pointer-events: none;
 }
 
-/* NEUTRAL top */
-.dial-n{
-  width: 190px;
-  left: 50%;
-  top:  calc(var(--dial-radius) * 0.12);
-  transform: translate(-50%, -50%);
-  text-align: center;
-}
+.dial-n{ width: 190px; left: 50%; top:  calc(var(--dial-radius) * 0.12); transform: translate(-50%, -50%); }
+.dial-s{ width: 120px; left: calc(50% - (var(--dial-radius) * 0.62)); top:  calc(var(--dial-radius) * 0.42); transform: translate(-50%, -50%); }
+.dial-b{ width: 120px; left: calc(50% + (var(--dial-radius) * 0.62)); top:  calc(var(--dial-radius) * 0.42); transform: translate(-50%, -50%); }
+.dial-sb{ width: 150px; left: calc(50% + (var(--dial-radius) * 0.50)); top:  calc(var(--dial-radius) * 0.86); transform: translate(-50%, -50%); justify-content: flex-end; padding-right: 6px; }
+.dial-ss{ width: 70px; left: calc(50% - (var(--dial-radius) * 0.78)); top:  calc(var(--dial-radius) * 0.85); transform: translate(-50%, -50%); justify-content: flex-start; padding-left: 6px; }
 
-/* SELL / BUY */
-.dial-s{
-  width: 120px;
-  left: calc(50% - (var(--dial-radius) * 0.62));
-  top:  calc(var(--dial-radius) * 0.42);
-  transform: translate(-50%, -50%);
-  text-align: center;
-}
-.dial-b{
-  width: 120px;
-  left: calc(50% + (var(--dial-radius) * 0.62));
-  top:  calc(var(--dial-radius) * 0.42);
-  transform: translate(-50%, -50%);
-  text-align: center;
-}
-
-/* STRONG SELL / STRONG BUY (symmetrical) */
-.dial-sb{
-  width: 150px;
-  left: calc(50% + (var(--dial-radius) * 0.55));
-  top:  calc(var(--dial-radius) * 0.90);
-  transform: translate(-50%, -50%);
-  justify-content: flex-end;
-  padding-right: 6px;
-  text-align: right;
-}
-.dial-ss{
-  width: 70px;
-  left: calc(50% - (var(--dial-radius) * 0.78));
-  top:  calc(var(--dial-radius) * 0.90);
-  transform: translate(-50%, -50%);
-  justify-content: flex-start;
-  padding-left: 6px;
-  text-align: left;
-}
-
-/* Titles */
 .dial-title{
   margin-top: 8px;
   font-weight: 950;
-  font-size: 40px;
+  font-size: 32px;
   letter-spacing: .2px;
   text-align: center;
 }
@@ -705,32 +508,100 @@ a:hover{ color: #ffffff; }
   margin-top: 4px;
   text-align: center;
   font-weight: 850;
-  font-size: 13px;
+  font-size: 12px;
   opacity: 0.80;
 }
 
 /* Responsive */
 @media (max-width: 860px){
-  .dial-arc-wrap{
-    --dial-size: 320px;
-    --dial-baseline: 28px;
-    --label-box-h: 42px;
-  }
-  .dial-title{ font-size: 30px; }
+  .dial-arc-wrap{ --dial-size: 280px; --dial-baseline: 24px; --label-box-h: 38px; }
+  .dial-title{ font-size: 26px; }
   .sector-bar-card{ width: 78px; }
 }
+/* ==========================================================================
+   ULTRA PREMIUM SECTION HEADINGS (Top 15 / Hot Now)
+   Applies to: .page-wrap h6 (your grid titles)
+   ========================================================================== */
 
+.page-wrap h6{
+  /* layout */
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 
-/* FORCE %Change colors (place at END of theme.css) */
-.ag-theme-alpine-dark .val-pill.up{
-  border-color: rgba(34,197,94,0.35) !important;
-  background: linear-gradient(90deg, rgba(34,197,94,0.28), rgba(255,255,255,0.03) 70%) !important;
-  color: rgba(236,255,245,0.98) !important;
+  margin: 6px 0 12px;
+  padding: 10px 14px;
+
+  /* premium pill card */
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: linear-gradient(180deg,
+    rgba(255,255,255,0.085),
+    rgba(255,255,255,0.028)
+  );
+
+  /* depth */
+  box-shadow:
+    0 18px 44px rgba(0,0,0,0.45),
+    inset 0 1px 0 rgba(255,255,255,0.10);
+
+  /* typography */
+  font-weight: 950;
+  letter-spacing: 0.55px;
+  text-transform: uppercase;
+  font-size: 12px;
+  color: rgba(255,255,255,0.86);
+
+  user-select: none;
+  white-space: nowrap;
 }
 
-.ag-theme-alpine-dark .val-pill.down{
-  border-color: rgba(251,113,133,0.38) !important;
-  background: linear-gradient(90deg, rgba(251,113,133,0.26), rgba(255,255,255,0.03) 70%) !important;
-  color: rgba(255,236,240,0.98) !important;
+/* Accent dot on the left */
+.page-wrap h6::before{
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg,
+    rgba(124,92,255,0.95),
+    rgba(34,211,238,0.75)
+  );
+  box-shadow:
+    0 0 0 5px rgba(124,92,255,0.14),
+    0 10px 26px rgba(34,211,238,0.12);
 }
 
+/* Thin “shine” line on top edge */
+.page-wrap h6{
+  position: relative;
+}
+.page-wrap h6::after{
+  content: "";
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 2px;
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(90deg,
+    rgba(255,255,255,0.22),
+    rgba(255,255,255,0.06),
+    rgba(255,255,255,0.18)
+  );
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+/* Responsive: slightly smaller */
+@media (max-width: 860px){
+  .page-wrap h6{
+    font-size: 11px;
+    padding: 9px 12px;
+    letter-spacing: 0.45px;
+  }
+}
+
+.stat-badge-seed{
+  box-shadow: 0 14px 32px rgba(245,158,11,0.12) !important;
+  border-color: rgba(245,158,11,0.35) !important;
+}
