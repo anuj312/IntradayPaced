@@ -59,16 +59,14 @@ HOT_WINDOW_SEC = 15 * 60
 HOT_SAMPLE_SEC = 5
 HOT_HISTORY_MAX_SEC = HOT_WINDOW_SEC + 5 * 60
 
-# High Vol + High RFactor tables tuning
 HVHR_N = int(os.getenv("HVHR_N", "20"))
-HVHR_RFACTOR_Q = float(os.getenv("HVHR_RFACTOR_Q", "0.85"))  # top 15% bucket
+HVHR_RFACTOR_Q = float(os.getenv("HVHR_RFACTOR_Q", "0.85"))
 
-# REAL NIFTY OI PCR tuning
-PCR_STRIKES_AROUND_ATM = int(os.getenv("PCR_STRIKES_AROUND_ATM", "12"))  # +/- strikes around ATM
+PCR_STRIKES_AROUND_ATM = int(os.getenv("PCR_STRIKES_AROUND_ATM", "12"))
 PCR_CACHE_TTL_SEC = int(os.getenv("PCR_CACHE_TTL_SEC", "20"))
 PCR_QUOTE_CHUNK = int(os.getenv("PCR_QUOTE_CHUNK", "180"))
 
-NIFTY_SPOT_SYMBOL = os.getenv("NIFTY_SPOT_SYMBOL", "NSE:NIFTY 50")  # used for ATM selection
+NIFTY_SPOT_SYMBOL = os.getenv("NIFTY_SPOT_SYMBOL", "NSE:NIFTY 50")
 
 
 # =============================================================================
@@ -113,7 +111,6 @@ SECTOR_DEFINITIONS = {
 }
 ALL_SYMBOLS = sorted(set(sum(SECTOR_DEFINITIONS.values(), [])))
 
-# NSE equity instruments
 ins = pd.DataFrame(kite.instruments("NSE"))
 ins = ins[ins["tradingsymbol"].isin(ALL_SYMBOLS)].copy()
 symbol_to_token: Dict[str, int] = dict(zip(ins["tradingsymbol"], ins["instrument_token"]))
@@ -124,21 +121,7 @@ TOKENS = sorted(symbol_to_token.values())
 
 
 # =============================================================================
-# MARKET HOURS + EOD SNAPSHOT
-# =============================================================================
-def market_is_open_ist(now: Optional[datetime] = None) -> bool:
-    now = now or datetime.now(IST)
-    if now.weekday() >= 5:
-        return False
-    t = now.time()
-    return dtime(9, 15) <= t <= dtime(15, 30)
-
-
-EOD_SNAPSHOT: Dict[int, Dict[str, Any]] = {}  # token -> eod dict
-
-
-# =============================================================================
-# LIVE STATE
+# LIVE / STATE
 # =============================================================================
 LOCK = threading.Lock()
 
@@ -154,6 +137,22 @@ TPS_WINDOW_SEC = 1.0
 TPS_BUCKETS = deque()
 
 HOT_HISTORY: Dict[int, deque] = {}  # token -> deque[(epoch, ltp, cumvol)]
+
+EOD_SNAPSHOT: Dict[int, Dict[str, Any]] = {}  # token -> eod dict
+DAILY_STATS: Dict[int, Dict[str, Optional[float]]] = {}
+
+DAILY_SEED_STARTED = False
+DAILY_SEED_DONE = False
+DAILY_SEED_PROGRESS = {"done": 0, "total": len(TOKENS)}
+DAILY_SEED_ERRORS = 0
+
+
+def market_is_open_ist(now: Optional[datetime] = None) -> bool:
+    now = now or datetime.now(IST)
+    if now.weekday() >= 5:
+        return False
+    t = now.time()
+    return dtime(9, 15) <= t <= dtime(15, 30)
 
 
 def _record_tick_batch(count: int, last_dt: Optional[datetime]):
@@ -211,16 +210,6 @@ def update_from_tick(tick: dict):
 
     _hot_history_push(token, time.time(), float(ltp), float(cumvol) if cumvol is not None else None)
     return ts
-
-
-# =============================================================================
-# DAILY STATS + EOD SEED
-# =============================================================================
-DAILY_STATS: Dict[int, Dict[str, Optional[float]]] = {}
-DAILY_SEED_STARTED = False
-DAILY_SEED_DONE = False
-DAILY_SEED_PROGRESS = {"done": 0, "total": len(TOKENS)}
-DAILY_SEED_ERRORS = 0
 
 
 def compute_20d_daily_stats_and_eod(token: int, days_back: int = 220) -> Dict[str, Any]:
@@ -333,13 +322,12 @@ def get_live_or_eod_state(token: int) -> Optional[Tuple[float, float, dict]]:
 
 
 # =============================================================================
-# REAL NIFTY OI PCR — NFO OPTIONS
+# PCR (NFO)
 # =============================================================================
 NFO_INS_DF: Optional[pd.DataFrame] = None
 NFO_LOAD_STARTED = False
 NFO_LOAD_ERR: Optional[str] = None
-
-PCR_CACHE: Dict[str, Tuple[dict, float]] = {}  # key -> (data, exp_epoch)
+PCR_CACHE: Dict[str, Tuple[dict, float]] = {}
 
 
 def load_nfo_instruments_once():
@@ -388,10 +376,6 @@ def _infer_strike_step(strikes: pd.Series) -> float:
 
 
 def compute_real_nifty_oi_pcr(strikes_around_atm: int = PCR_STRIKES_AROUND_ATM) -> Optional[dict]:
-    """
-    REAL NIFTY OI PCR:
-      PCR = Sum(PE OI) / Sum(CE OI) for nearest expiry within ATM +/- strikes range.
-    """
     cache_key = f"NIFTY:oi:{strikes_around_atm}"
     cached = PCR_CACHE.get(cache_key)
     if cached and cached[1] > time.time():
@@ -400,7 +384,6 @@ def compute_real_nifty_oi_pcr(strikes_around_atm: int = PCR_STRIKES_AROUND_ATM) 
     if NFO_LOAD_ERR or NFO_INS_DF is None:
         return None
 
-    # Spot
     try:
         spot = float(kite.ltp([NIFTY_SPOT_SYMBOL])[NIFTY_SPOT_SYMBOL]["last_price"])
     except Exception:
@@ -443,7 +426,6 @@ def compute_real_nifty_oi_pcr(strikes_around_atm: int = PCR_STRIKES_AROUND_ATM) 
 
     ce_oi = sum(float(q.get(k, {}).get("oi") or 0.0) for k in ce_keys)
     pe_oi = sum(float(q.get(k, {}).get("oi") or 0.0) for k in pe_keys)
-
     pcr = pe_oi / (ce_oi + 1e-9)
 
     data = {
@@ -725,7 +707,7 @@ def sector_rows_sorted_by_rfactor(sector: str):
 
 
 # =============================================================================
-# SENTIMENT (breadth proxy)
+# SENTIMENT
 # =============================================================================
 def compute_market_sentiment_proxy():
     adv = dec = unch = 0
@@ -859,12 +841,12 @@ def dial_component(prefix: str, title: str):
 def sectors_page():
     four_cols = [
         {"colId": "stock", "field": "Symbol", "headerName": "STOCK", "cellRenderer": "SymbolCell", "minWidth": 130, "flex": 1},
-        {"colId": "pctChg", "field": "%Change", "headerName": "%CHG", "type": "rightAligned", "minWidth": 100, "flex": 1,
-         "cellClass": "cell-num", "cellRenderer": "PctPill"},
-        {"colId": "rfactor", "field": "RFactor", "headerName": "RFACTOR", "type": "rightAligned", "minWidth": 110, "flex": 1,
-         "cellClass": "cell-num", "cellRenderer": "RfactorPill"},
-        {"colId": "volume", "field": "Vol", "headerName": "VOLUME", "type": "rightAligned", "minWidth": 120, "flex": 1,
-         "cellClass": "cell-num", "cellRenderer": "VolPill"},
+        {"colId": "pctChg", "field": "%Change", "headerName": "%CHG", "type": "rightAligned",
+         "minWidth": 110, "width": 130, "cellClass": "cell-num", "cellRenderer": "PctPill"},
+        {"colId": "rfactor", "field": "RFactor", "headerName": "RFACTOR", "type": "rightAligned",
+         "minWidth": 120, "width": 140, "cellClass": "cell-num", "cellRenderer": "RfactorPill"},
+        {"colId": "volume", "field": "Vol", "headerName": "VOLUME", "type": "rightAligned",
+         "minWidth": 130, "width": 150, "cellClass": "cell-num", "cellRenderer": "VolPill"},
     ]
 
     grid_opts = {
@@ -1023,6 +1005,7 @@ def sectors_page():
 
 
 def sector_page(sector: str):
+    # NOTE: domLayout autoHeight -> no internal vertical scroll
     return html.Div(
         [
             dcc.Interval(id="refresh_sector", interval=2000, n_intervals=0),
@@ -1037,33 +1020,47 @@ def sector_page(sector: str):
                 id="grid",
                 className="ag-theme-alpine-dark grid-wrap",
                 columnDefs=[
-                    {"colId": "stock", "field": "Symbol", "headerName": "STOCK", "pinned": "left", "cellRenderer": "StockCell", "minWidth": 220},
-                    {"colId": "price", "field": "Price", "headerName": "PRICE", "type": "rightAligned", "valueFormatter": {"function": "fmt2(params.value)"}},
+                    {"colId": "stock", "field": "Symbol", "headerName": "STOCK", "pinned": "left",
+                     "cellRenderer": "StockCell", "minWidth": 260},
+
+                    {"colId": "price", "field": "Price", "headerName": "PRICE", "type": "rightAligned",
+                     "valueFormatter": {"function": "fmt2(params.value)"}, "minWidth": 120, "flex": 1},
+
                     {"colId": "chgO", "field": "Chg (O)", "headerName": "CHG (O)", "type": "rightAligned",
                      "valueFormatter": {"function": "fmtSigned2(params.value)"},
-                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"}},
+                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"},
+                     "minWidth": 130, "flex": 1},
+
                     {"colId": "gapPct", "field": "Gap%", "headerName": "GAP%", "type": "rightAligned",
                      "valueFormatter": {"function": "fmtPct(params.value)"},
-                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"}},
+                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"},
+                     "minWidth": 115, "flex": 1},
+
                     {"colId": "chgPctO", "field": "Chg% (O)", "headerName": "CHG% (O)", "type": "rightAligned",
                      "valueFormatter": {"function": "fmtPct(params.value)"},
-                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"}},
+                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"},
+                     "minWidth": 140, "flex": 1},
+
                     {"colId": "rfactor", "field": "RFactor", "headerName": "RFACTOR", "type": "rightAligned",
-                     "valueFormatter": {"function": "fmt2(params.value)"}, "sort": "desc"},
+                     "valueFormatter": {"function": "fmt2(params.value)"}, "sort": "desc",
+                     "minWidth": 130, "flex": 1},
+
                     {"colId": "dirr", "field": "DirR", "headerName": "DIR R", "type": "rightAligned",
                      "valueFormatter": {"function": "fmtSigned2(params.value)"},
-                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"}},
+                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"},
+                     "minWidth": 120, "flex": 1},
                 ],
                 rowData=[],
                 defaultColDef={"sortable": True, "filter": True, "resizable": True},
                 dashGridOptions={
-                    "alwaysShowVerticalScroll": True,
+                    "domLayout": "autoHeight",
                     "animateRows": True,
                     "suppressMenuHide": True,
                     "suppressHeaderMenuButton": False,
                     "suppressHeaderFilterButton": False,
+                    "alwaysShowVerticalScroll": False,
                 },
-                style={"height": "72vh", "width": "100%"},
+                style={"height": "auto", "width": "100%"},
             ),
         ],
         className="page-wrap",
@@ -1164,12 +1161,11 @@ def render_sector_bars(_):
 
 
 # =============================================================================
-# DIAL SUBTITLE helpers (state badge + compact OI)
+# Dial helpers
 # =============================================================================
 def _state_class(label: str) -> str:
     L = (label or "").upper().strip()
     L = " ".join(L.split())
-
     if L == "STRONG SELL":
         return "state-ss"
     if L == "SELL":
@@ -1180,13 +1176,10 @@ def _state_class(label: str) -> str:
         return "state-buy"
     if L == "STRONG BUY":
         return "state-sb"
-
-    # Sentiment words (if ever used)
     if L == "BEARISH":
         return "state-sell"
     if L == "BULLISH":
         return "state-buy"
-
     return "state-neutral"
 
 
@@ -1212,9 +1205,7 @@ def _fmt_oi_compact(v: Optional[float]) -> str:
     Input("refresh_sectors", "n_intervals"),
 )
 def update_dials(_):
-    # -------------------------
     # Sentiment
-    # -------------------------
     with LOCK:
         sm = compute_market_sentiment_proxy()
 
@@ -1226,17 +1217,12 @@ def update_dials(_):
     sent_sub = html.Span(
         [
             html.Span(sent_label, className=f"dial-state {_state_class(sent_label)}"),
-            html.Span(
-                f"{score:+.2f} • {sm['adv']} ↑ • {sm['dec']} ↓",
-                className="dial-meta",
-            ),
+            html.Span(f"{score:+.2f} • {sm['adv']} ↑ • {sm['dec']} ↓", className="dial-meta"),
         ],
         className="dial-sub-inner",
     )
 
-    # -------------------------
-    # NIFTY OI PCR
-    # -------------------------
+    # PCR
     pn = compute_real_nifty_oi_pcr(strikes_around_atm=PCR_STRIKES_AROUND_ATM)
 
     if pn and pn.get("pcr") is not None:
@@ -1252,7 +1238,6 @@ def update_dials(_):
         pe_txt = _fmt_oi_compact(pe_oi)
         ce_txt = _fmt_oi_compact(ce_oi)
 
-        # Clean: no Exp/ATM; includes PE/CE OI
         pcr_sub = html.Span(
             [
                 html.Span(label, className=f"dial-state {_state_class(label)}"),
@@ -1380,5 +1365,4 @@ def root():
     return RedirectResponse(url="/dash/", status_code=307)
 
 
-# Mount Dash (no auth)
 app.mount("/dash", WSGIMiddleware(server))
