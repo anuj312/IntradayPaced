@@ -31,7 +31,10 @@ import dash_bootstrap_components as dbc
 import dash_ag_grid as dag
 
 from kiteconnect import KiteConnect, KiteTicker
-from rotation import app as rotation_app 
+from rotation import app as rotation_app
+
+# NEW: Volm page lives in web.py (Dash "plugin" page)
+import web
 
 
 # =============================================================================
@@ -813,6 +816,20 @@ dash_app = dash.Dash(
 )
 server = dash_app.server
 
+# NEW: register Volm page callbacks (uses the same WS/state from this app.py)
+web.register_volm(
+    dash_app,
+    BASE=BASE,
+    ctx={
+        "LOCK": LOCK,
+        "ALL_SYMBOLS": ALL_SYMBOLS,
+        "symbol_to_token": symbol_to_token,
+        "DAILY_STATS": DAILY_STATS,
+        "get_live_or_eod_state": get_live_or_eod_state,
+        "IST": IST,
+    },
+)
+
 
 def dial_component(prefix: str, title: str):
     return html.Div(
@@ -841,53 +858,53 @@ def dial_component(prefix: str, title: str):
 
 def sectors_page():
     four_cols = [
-    {
-        "colId": "stock",
-        "field": "Symbol",
-        "headerName": "STOCK",
-        "cellRenderer": "SymbolCell",
-        "minWidth": 10,
-        "flex": 1,  # <-- STOCK absorbs all extra width (no empty space)
-        "headerClass": "h-left",
-        "cellClass": "c-left",
-    },
-    {
-        "colId": "pctChg",
-        "field": "%Change",
-        "headerName": "%CHG",
-        "cellRenderer": "PctPill",
-        "width": 10,
-        "minWidth": 150,
-        "maxWidth": 150,
-        "suppressSizeToFit": True,  # <-- keep tight (prevents “gap”)
-        "headerClass": "ag-right-aligned-header h-right",
-        "cellClass": "ag-right-aligned-cell cell-num c-right",
-    },
-    {
-        "colId": "rfactor",
-        "field": "RFactor",
-        "headerName": "RFACTOR",
-        "cellRenderer": "RfactorPill",
-        "width": 10,
-        "minWidth": 125,
-        "maxWidth": 170,
-        "suppressSizeToFit": True,  # <-- keep tight
-        "headerClass": "ag-right-aligned-header h-right",
-        "cellClass": "ag-right-aligned-cell cell-num c-right",
-    },
-    {
-        "colId": "volume",
-        "field": "Vol",
-        "headerName": "VOLUME",
-        "cellRenderer": "VolPill",
-        "width": 5,
-        "minWidth": 140,
-        "maxWidth": 190,
-        "suppressSizeToFit": True,  # <-- keep tight
-        "headerClass": "ag-right-aligned-header h-right",
-        "cellClass": "ag-right-aligned-cell cell-num c-right",
-    },
-]
+        {
+            "colId": "stock",
+            "field": "Symbol",
+            "headerName": "STOCK",
+            "cellRenderer": "SymbolCell",
+            "minWidth": 10,
+            "flex": 1,
+            "headerClass": "h-left",
+            "cellClass": "c-left",
+        },
+        {
+            "colId": "pctChg",
+            "field": "%Change",
+            "headerName": "%CHG",
+            "cellRenderer": "PctPill",
+            "width": 10,
+            "minWidth": 150,
+            "maxWidth": 150,
+            "suppressSizeToFit": True,
+            "headerClass": "ag-right-aligned-header h-right",
+            "cellClass": "ag-right-aligned-cell cell-num c-right",
+        },
+        {
+            "colId": "rfactor",
+            "field": "RFactor",
+            "headerName": "RFACTOR",
+            "cellRenderer": "RfactorPill",
+            "width": 10,
+            "minWidth": 125,
+            "maxWidth": 170,
+            "suppressSizeToFit": True,
+            "headerClass": "ag-right-aligned-header h-right",
+            "cellClass": "ag-right-aligned-cell cell-num c-right",
+        },
+        {
+            "colId": "volume",
+            "field": "Vol",
+            "headerName": "VOLUME",
+            "cellRenderer": "VolPill",
+            "width": 5,
+            "minWidth": 140,
+            "maxWidth": 190,
+            "suppressSizeToFit": True,
+            "headerClass": "ag-right-aligned-header h-right",
+            "cellClass": "ag-right-aligned-cell cell-num c-right",
+        },
+    ]
 
     grid_opts = {
         "getRowId": {"function": "params.data.Symbol"},
@@ -1045,7 +1062,6 @@ def sectors_page():
 
 
 def sector_page(sector: str):
-    # NOTE: domLayout autoHeight -> no internal vertical scroll
     return html.Div(
         [
             dcc.Interval(id="refresh_sector", interval=2000, n_intervals=0),
@@ -1130,9 +1146,16 @@ dash_app.layout = dbc.Container(
 @dash_app.callback(Output("app-body", "children"), Input("url", "pathname"))
 def route(pathname):
     pn = (pathname or "").strip() or "/"
+
+    # Home
     if pn in ("/", "/dash", "/dash/", BASE):
         return sectors_page()
 
+    # NEW: Volm page (from web.py)
+    if pn in (f"{BASE}volm", f"{BASE}volm/"):
+        return web.volm_page(BASE)
+
+    # Sector
     if pn.startswith(f"{BASE}sector/"):
         sector = unquote(pn.split(f"{BASE}sector/")[1]).upper()
         return sector_page(sector) if sector in SECTOR_DEFINITIONS else dbc.Alert("Sector not found", color="danger")
@@ -1154,42 +1177,50 @@ def update_top_stats(_):
         d_total = DAILY_SEED_PROGRESS.get("total", 0)
         d_err = DAILY_SEED_ERRORS
 
-    # 1. Live/Offline Badge (Colored Badge)
     chips = [
         dbc.Badge(
-            "Offline" if offline else "Live", 
-            color=("danger" if offline else "success"), 
-            className="stat-badge"
+            "Offline" if offline else "Live",
+            color=("danger" if offline else "success"),
+            className="stat-badge",
         ),
     ]
 
-    # 2. Rotation Button (Styled exactly like a stat-chip)
+    chips.append(
+    html.A(
+        "Volm",
+        href=f"{BASE}volm",
+        target="_blank",
+        className="stat-chip",
+        style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"},
+    )
+)
+
+    # Rotation link
     rotation_link = html.A(
         "Rotation ⬈",
         href="/rotation/",
         target="_blank",
-        className="stat-chip",  # <--- Same class as stats
+        className="stat-chip",
         style={
-            "textDecoration": "none", 
-            "color": "var(--text-muted)", # Matches theme text color
+            "textDecoration": "none",
+            "color": "var(--text-muted)",
             "cursor": "pointer",
-            "marginLeft": "8px"
-        }
+            "marginLeft": "8px",
+        },
     )
     chips.append(rotation_link)
 
-    # 3. Seeding Progress
+    # Seeding Progress
     if not d_done:
         chips.append(
             dbc.Badge(
-                f"Seeding {d_done_n}/{d_total}", 
-                color="warning", 
+                f"Seeding {d_done_n}/{d_total}",
+                color="warning",
                 className="stat-badge",
-                style={"marginLeft": "8px"}
+                style={"marginLeft": "8px"},
             )
         )
 
-    # 4. Stats
     chips += [
         html.Div(f"TPS {tps:.1f}", className="stat-chip"),
         html.Div(f"Ticks {tot:,}", className="stat-chip"),
@@ -1197,6 +1228,7 @@ def update_top_stats(_):
     ]
 
     return html.Div(chips, className="top-stats-wrap")
+
 
 @dash_app.callback(Output("sector-bars", "children"), Input("refresh_sectors", "n_intervals"))
 def render_sector_bars(_):
