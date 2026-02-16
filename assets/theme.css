@@ -828,3 +828,311 @@ td:first-child { text-align: left; }
   .sector-bar-card{ width: 78px; }
   .page-wrap h6{ font-size: 11px; padding: 9px 12px; letter-spacing: 0.45px; }
 }
+
+
+/* ==========================================================================
+   ULTRA PREMIUM SORT TOGGLES (RVOLm / DirR) — COMPACT
+   Targets Dash Bootstrap RadioItems:
+     - Home sectors sort:   #sectors-sort
+     - Sector stocks sort:  #sector-sort
+========================================================================== */
+
+:root{
+  --sort-shell: rgba(255,255,255,0.045);
+  --sort-shell-2: rgba(255,255,255,0.020);
+  --sort-border: rgba(255,255,255,0.14);
+
+  --sort-text: rgba(255,255,255,0.78);
+  --sort-text-on: rgba(255,255,255,0.94);
+
+  --sort-blue: rgba(55, 66, 250, 0.95);     /* sapphire */
+  --sort-blue2: rgba(30, 144, 255, 0.85);
+  --sort-green: rgba(46, 213, 115, 0.98);   /* emerald */
+  --sort-green2: rgba(32, 191, 107, 0.88);
+}
+
+/* --- wrapper capsule --- */
+#sectors-sort,
+#sector-sort{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--sort-border);
+  background:
+    radial-gradient(560px 150px at 50% 0%, rgba(255,255,255,0.085), transparent 70%),
+    linear-gradient(180deg, var(--sort-shell), var(--sort-shell-2));
+  box-shadow:
+    0 16px 46px rgba(0,0,0,0.55),
+    inset 0 1px 0 rgba(255,255,255,0.10);
+  backdrop-filter: blur(14px) saturate(1.12);
+  -webkit-backdrop-filter: blur(14px) saturate(1.12);
+}
+
+/* Make inline radio items feel like a segmented control */
+#sectors-sort .form-check,
+#sector-sort  .form-check{
+  margin: 0 !important;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Hide the default radio dot */
+#sectors-sort .form-check-input,
+#sector-sort  .form-check-input{
+  position: absolute !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Premium button label (compact) */
+#sectors-sort .form-check-label,
+#sector-sort  .form-check-label{
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(0,0,0,0.30);
+
+  color: var(--sort-text);
+  font-weight: 950;
+  letter-spacing: 0.45px;
+  text-transform: uppercase;
+  font-size: 11px;
+  user-select: none;
+
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    0 12px 26px rgba(0,0,0,0.38);
+
+  transition:
+    transform 0.10s ease,
+    background 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    color 0.18s ease,
+    filter 0.18s ease;
+}
+
+/* Subtle sheen */
+#sectors-sort .form-check-label::after,
+#sector-sort  .form-check-label::after{
+  content:"";
+  position:absolute;
+  inset: 1px;
+  border-radius: 999px;
+  pointer-events:none;
+  opacity: 0.50;
+  background: linear-gradient(
+    110deg,
+    rgba(255,255,255,0.00) 0%,
+    rgba(255,255,255,0.075) 28%,
+    rgba(255,255,255,0.02) 55%,
+    rgba(255,255,255,0.00) 78%
+  );
+  mask-image: radial-gradient(closest-side, rgba(0,0,0,1), rgba(0,0,0,0.0));
+}
+
+/* Hover/press */
+#sectors-sort .form-check-label:hover,
+#sector-sort  .form-check-label:hover{
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+#sectors-sort .form-check-label:active,
+#sector-sort  .form-check-label:active{
+  transform: translateY(0px) scale(0.99);
+}
+
+/* RVOLm selected => emerald */
+#sectors-sort input[value="RVOLm"]:checked + label,
+#sector-sort  input[value="RVOLm"]:checked + label{
+  color: var(--sort-text-on);
+  border-color: rgba(46,213,115,0.40);
+  background:
+    radial-gradient(420px 140px at 50% 0%, rgba(46,213,115,0.20), transparent 70%),
+    linear-gradient(180deg, rgba(46,213,115,0.17), rgba(0,0,0,0.25));
+  box-shadow:
+    0 16px 40px rgba(0,0,0,0.58),
+    0 0 0 1px rgba(46,213,115,0.18),
+    0 0 18px rgba(46,213,115,0.20),
+    inset 0 1px 0 rgba(255,255,255,0.12);
+}
+
+/* DirR selected => sapphire */
+#sectors-sort input[value="DirR"]:checked + label,
+#sector-sort  input[value="DirR"]:checked + label{
+  color: var(--sort-text-on);
+  border-color: rgba(30,144,255,0.40);
+  background:
+    radial-gradient(420px 140px at 50% 0%, rgba(30,144,255,0.20), transparent 70%),
+    linear-gradient(180deg, rgba(30,144,255,0.15), rgba(0,0,0,0.25));
+  box-shadow:
+    0 16px 40px rgba(0,0,0,0.58),
+    0 0 0 1px rgba(30,144,255,0.17),
+    0 0 18px rgba(30,144,255,0.18),
+    inset 0 1px 0 rgba(255,255,255,0.12);
+}
+
+/* Very subtle pulse on selected (reduced intensity) */
+@keyframes sortPulseCompact {
+  0%   { filter: brightness(1.00); }
+  50%  { filter: brightness(1.04); }
+  100% { filter: brightness(1.00); }
+}
+#sectors-sort input:checked + label,
+#sector-sort  input:checked + label{
+  animation: sortPulseCompact 2.2s ease-in-out infinite;
+}
+
+/* Mobile: slightly tighter */
+@media (max-width: 860px){
+  #sectors-sort,
+  #sector-sort{
+    padding: 7px 9px;
+    gap: 7px;
+  }
+  #sectors-sort .form-check-label,
+  #sector-sort  .form-check-label{
+    padding: 7px 10px;
+    font-size: 10px;
+    letter-spacing: 0.40px;
+  }
+}
+
+/* ==========================================================================
+   ULTRA PREMIUM DIAL COLOR GRADE (HDR JEWEL RING + CHROMA EDGE GLOW)
+   Drop-in override: paste at END of theme.css
+========================================================================== */
+
+:root{
+  /* Deeper jewel primaries (less flat neon, more “gem”) */
+  --dial-sell-strong: rgba(176, 18, 61, 1);    /* deep ruby */
+  --dial-sell:        rgba(255, 45, 85, 1);    /* hot ruby */
+  --dial-neutral-1:   rgba(47, 107, 255, 1);   /* royal sapphire */
+  --dial-neutral-2:   rgba(82, 210, 255, 1);   /* ice sapphire */
+  --dial-buy:         rgba(0, 230, 118, 1);    /* emerald */
+  --dial-buy-strong:  rgba(0, 200, 83, 1);     /* deep emerald */
+
+  /* Ring tuning */
+  --dial-arc-opacity: 0.965;
+  --dial-contrast:    1.28;
+  --dial-saturate:    1.24;
+  --dial-brightness:  1.07;
+}
+
+/* Stronger ceramic + vignette (makes colors feel more “inlaid”) */
+.dial-arc{
+  background:
+    radial-gradient(closest-side at 50% 26%, rgba(255,255,255,0.12), transparent 60%),
+    radial-gradient(closest-side at 50% 82%, rgba(0,0,0,0.00) 52%, rgba(0,0,0,0.92) 100%),
+    radial-gradient(closest-side, rgba(255,255,255,0.03), rgba(0,0,0,0.0) 58%);
+  box-shadow:
+    0 42px 140px rgba(0,0,0,0.92),
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 0 0 1px rgba(255,255,255,0.05),
+    inset 0 -22px 52px rgba(0,0,0,0.62);
+}
+
+/* HDR ring: add chroma edge + micro-sparkle bands */
+.dial-arc-sentiment::before,
+.dial-arc-pcr::before{
+  background:
+    /* Core jewel ring */
+    conic-gradient(from 270deg,
+      var(--dial-sell-strong) 0deg 34deg,
+      var(--dial-sell)       34deg 72deg,
+      var(--dial-neutral-1)  72deg 96deg,
+      var(--dial-neutral-2)  96deg 108deg,
+      var(--dial-buy)        108deg 144deg,
+      var(--dial-buy-strong) 144deg 180deg,
+      transparent 180deg
+    ),
+
+    /* Sparkle band 1 (thin) */
+    conic-gradient(from 250deg,
+      transparent 0deg 48deg,
+      rgba(255,255,255,0.00) 48deg 49.0deg,
+      rgba(255,255,255,0.36) 49.0deg 49.6deg,
+      rgba(255,255,255,0.06) 49.6deg 50.6deg,
+      rgba(255,255,255,0.00) 50.6deg 180deg,
+      transparent 180deg
+    ),
+
+    /* Sparkle band 2 (thin) */
+    conic-gradient(from 292deg,
+      transparent 0deg 86deg,
+      rgba(255,255,255,0.00) 86deg 87.0deg,
+      rgba(255,255,255,0.22) 87.0deg 87.6deg,
+      rgba(255,255,255,0.00) 87.6deg 180deg,
+      transparent 180deg
+    ),
+
+    /* Edge chroma lift (gives “gem edge”) */
+    radial-gradient(closest-side at 50% 52%,
+      rgba(255,255,255,0.00) 56%,
+      rgba(255,255,255,0.10) 62%,
+      rgba(0,0,0,0.00) 68%
+    );
+
+  background-blend-mode: normal, screen, screen, overlay;
+  opacity: var(--dial-arc-opacity);
+
+  /* Extra chroma glow (premium feel) */
+  filter:
+    drop-shadow(0 22px 60px rgba(0,0,0,0.80))
+    drop-shadow(0 0 28px rgba(0,0,0,0.50))
+    drop-shadow(0 0 18px rgba(82,210,255,0.10))
+    drop-shadow(0 0 18px rgba(0,230,118,0.10))
+    drop-shadow(0 0 18px rgba(255,45,85,0.10))
+    contrast(var(--dial-contrast))
+    saturate(var(--dial-saturate))
+    brightness(var(--dial-brightness));
+}
+
+/* Needle: sharper, more metallic */
+.dial-needle{
+  background: linear-gradient(
+    90deg,
+    rgba(255,255,255,0.08),
+    rgba(255,255,255,0.96),
+    rgba(255,255,255,0.22),
+    rgba(255,255,255,0.96),
+    rgba(255,255,255,0.08)
+  );
+  box-shadow:
+    0 22px 70px rgba(0,0,0,0.88),
+    0 0 0 1px rgba(255,255,255,0.06),
+    0 0 18px rgba(255,255,255,0.08);
+}
+
+/* Center cap: more depth + specular highlight */
+.dial-center{
+  background:
+    radial-gradient(circle at 28% 28%,
+      rgba(255,255,255,0.96) 0%,
+      rgba(255,255,255,0.22) 22%,
+      rgba(0,0,0,0.74) 58%,
+      rgba(0,0,0,0.96) 100%);
+  box-shadow:
+    0 14px 34px rgba(0,0,0,0.86),
+    inset 0 1px 0 rgba(255,255,255,0.18),
+    inset 0 -10px 22px rgba(0,0,0,0.55),
+    0 0 0 1px rgba(255,255,255,0.10);
+}
+
+/* Labels: slightly crisper */
+.dial-label{
+  text-shadow:
+    0 14px 34px rgba(0,0,0,0.84),
+    0 0 18px rgba(255,255,255,0.10);
+  letter-spacing: 0.75px;
+}
+

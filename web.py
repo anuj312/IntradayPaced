@@ -5,9 +5,8 @@
 #   volm_page(BASE) -> layout
 #   register_volm(dash_app, BASE, ctx) -> registers callbacks
 
-import time
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Tuple
 
 import pandas as pd
 import dash
@@ -29,8 +28,7 @@ POS_NEAR_HIGH_TH = 0.80
 POS_NEAR_LOW_TH = 0.20
 
 RANGE_EXP_MULT = 1.20     # range expansion vs avg
-ABS_MOVE_TH = 0.70        # "quiet move"
-RANGE_CONTR_MULT = 0.90   # tight range vs avg
+RANGE_CONTR_MULT = 0.90   # tight range vs avg (kept for reference)
 
 TOP_N = 15
 
@@ -63,7 +61,7 @@ def _safe_float(x, default=None):
 def _compute_volm_df(ctx: Dict[str, Any]) -> pd.DataFrame:
     """
     Build dataframe with:
-      Symbol, %Change, Vol, RVOL(paced), pos_in_range, day_range_pct, flags...
+      Symbol, %Change (from open), Vol, RVOL(paced), pos_in_range, day_range_pct, flags...
     """
     LOCK = ctx["LOCK"]
     ALL_SYMBOLS = ctx["ALL_SYMBOLS"]
@@ -130,7 +128,7 @@ def _compute_volm_df(ctx: Dict[str, Any]) -> pd.DataFrame:
             range_exp_ok = day_range_pct >= (RANGE_EXP_MULT * max(0.0001, avg_range_pct_20))
             range_tight_ok = day_range_pct <= (RANGE_CONTR_MULT * max(0.0001, avg_range_pct_20))
 
-            # Time-paced RVOL (more fair at 10:30 vs 14:30)
+            # Time-paced RVOL
             expected_vol = avg_vol_20 * tf
             rvol_paced = vol_today / (expected_vol + 1e-9)
 
@@ -148,19 +146,19 @@ def _compute_volm_df(ctx: Dict[str, Any]) -> pd.DataFrame:
                 }
             )
 
-    if not rows:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(rows)
-    return df
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 def _volm_tables(ctx: Dict[str, Any]) -> Tuple[list, list, list, list, float, float]:
+    """
+    Returns:
+      breakout_rows, breakdown_rows, buy_rvol_rows, sell_rvol_rows, shock_th, extreme_th
+    """
     df = _compute_volm_df(ctx)
     if df.empty:
         return [], [], [], [], 2.0, 3.0
 
-    # Dynamic thresholds with floors
+    # Dynamic thresholds with floors (used for breakout/breakdown + hint)
     if len(df) >= 20:
         q95 = float(df["RVOL"].quantile(0.95))
         q97 = float(df["RVOL"].quantile(0.97))
@@ -168,7 +166,7 @@ def _volm_tables(ctx: Dict[str, Any]) -> Tuple[list, list, list, list, float, fl
         q95, q97 = 2.0, 3.0
 
     rvol_shock_th = max(2.0, q95)
-    rvol_abs_th = max(3.0, q97)
+    rvol_extreme_th = max(3.0, q97)
 
     breakout = (
         df[
@@ -194,32 +192,25 @@ def _volm_tables(ctx: Dict[str, Any]) -> Tuple[list, list, list, list, float, fl
         .to_dict("records")
     )
 
-    absorption_base = df[
-        (df["RVOL"] >= rvol_abs_th)
-        & (df["%Change"].abs() <= ABS_MOVE_TH)
-        & (df["_range_tight_ok"])
-    ].copy()
-
-    absorption_acc = (
-        absorption_base[absorption_base["_pos"] >= 0.60]
+    # Buying vs Selling RVOL (proxy by sign of %Change from open)
+    buy_rvol = (
+        df[df["%Change"] >= 0]
         .sort_values("RVOL", ascending=False)
         .head(TOP_N)[["Symbol", "%Change", "RVOL", "Vol"]]
         .to_dict("records")
     )
 
-    absorption_dist = (
-        absorption_base[absorption_base["_pos"] <= 0.40]
+    sell_rvol = (
+        df[df["%Change"] < 0]
         .sort_values("RVOL", ascending=False)
         .head(TOP_N)[["Symbol", "%Change", "RVOL", "Vol"]]
         .to_dict("records")
     )
 
-    return breakout, breakdown, absorption_acc, absorption_dist, rvol_shock_th, rvol_abs_th
+    return breakout, breakdown, buy_rvol, sell_rvol, rvol_shock_th, rvol_extreme_th
 
 
 def volm_page(BASE: str):
-    # Use same renderers you already use in app.py (SymbolCell / PctPill / RfactorPill / VolPill)
-    # RVOL column uses RfactorPill renderer (just a number pill).
     cols = [
         {
             "colId": "stock",
@@ -267,15 +258,22 @@ def volm_page(BASE: str):
         },
     ]
 
+    # Make it show ~10 rows and scroll to 15
+    ROW_H = 34
+    HDR_H = 34
+    GRID_10ROWS_HEIGHT = f"{HDR_H + (10 * ROW_H) + 4}px"
+
     grid_opts = {
         "getRowId": {"function": "params.data.Symbol"},
         "alwaysShowVerticalScroll": False,
         "animateRows": False,
+        "rowHeight": ROW_H,
+        "headerHeight": HDR_H,
         "onGridReady": {"function": "params.api.sizeColumnsToFit();"},
         "onGridSizeChanged": {"function": "params.api.sizeColumnsToFit();"},
     }
 
-    def grid(id_):
+    def grid(id_, height="min(420px, 42vh)"):
         return dag.AgGrid(
             id=id_,
             className="ag-theme-alpine-dark grid-wrap compact-grid",
@@ -283,7 +281,7 @@ def volm_page(BASE: str):
             rowData=[],
             defaultColDef={"sortable": True, "filter": True, "resizable": True},
             dashGridOptions=grid_opts,
-            style={"height": "min(420px, 42vh)", "width": "100%"},
+            style={"height": height, "width": "100%"},
         )
 
     return html.Div(
@@ -311,8 +309,16 @@ def volm_page(BASE: str):
             html.Hr(),
             dbc.Row(
                 [
-                    dbc.Col([html.H6("Absorption (Accumulation-like)", className="mt-1"), grid("volm-abs-acc")], md=6),
-                    dbc.Col([html.H6("Absorption (Distribution-like)", className="mt-1"), grid("volm-abs-dist")], md=6),
+                    dbc.Col(
+                        [html.H6("Top 15 BUYING RVOL (RVOL high + %CHG ≥ 0)", className="mt-1"),
+                         grid("volm-buy-rvol", height=GRID_10ROWS_HEIGHT)],
+                        md=6,
+                    ),
+                    dbc.Col(
+                        [html.H6("Top 15 SELLING RVOL (RVOL high + %CHG < 0)", className="mt-1"),
+                         grid("volm-sell-rvol", height=GRID_10ROWS_HEIGHT)],
+                        md=6,
+                    ),
                 ],
                 className="g-2",
             ),
@@ -322,25 +328,19 @@ def volm_page(BASE: str):
 
 
 def register_volm(dash_app, BASE: str, ctx: Dict[str, Any]) -> None:
-    """
-    Register callbacks on your existing dash_app.
-    Call this once from app.py after dash_app is created.
-    """
-
     @dash_app.callback(
         Output("volm-breakout", "rowData"),
         Output("volm-breakdown", "rowData"),
-        Output("volm-abs-acc", "rowData"),
-        Output("volm-abs-dist", "rowData"),
+        Output("volm-buy-rvol", "rowData"),
+        Output("volm-sell-rvol", "rowData"),
         Output("volm-thresholds", "children"),
         Input("refresh_volm", "n_intervals"),
         prevent_initial_call=False,
     )
     def _update_volm(_n):
         try:
-            b1, b2, a1, a2, th_shock, th_abs = _volm_tables(ctx)
-            hint = f"Thresholds (dynamic): Shock RVOL ≥ {th_shock:.2f} | Absorption RVOL ≥ {th_abs:.2f}"
-            return b1, b2, a1, a2, hint
+            b1, b2, buy15, sell15, th_shock, th_extreme = _volm_tables(ctx)
+            hint = f"Thresholds (dynamic): Shock RVOL ≥ {th_shock:.2f} | Extreme RVOL ≥ {th_extreme:.2f}"
+            return b1, b2, buy15, sell15, hint
         except Exception:
-            # If anything fails, never crash the app
             return [], [], [], [], "Volm loading…"

@@ -33,7 +33,7 @@ import dash_ag_grid as dag
 from kiteconnect import KiteConnect, KiteTicker
 from rotation import app as rotation_app
 
-# NEW: Volm page lives in web.py (Dash "plugin" page)
+# Volm page plugin (Dash page in web.py)
 import web
 
 
@@ -84,35 +84,87 @@ kite.set_access_token(ACCESS_TOKEN)
 # SECTORS / SYMBOLS
 # =============================================================================
 SECTOR_DEFINITIONS = {
-    "METAL": ["ADANIENT","HINDALCO","JSWSTEEL","HINDZINC","APLAPOLLO","TATASTEEL","JINDALSTEL","VEDL","SAIL","NATIONALUM","NMDC"],
-    "PSUS": ["BANKINDIA","PNB","INDIANB","SBIN","UNIONBANK","BANKBARODA","CANBK"],
-    "REALTY": ["PHOENIXLTD","GODREJPROP","LODHA","OBEROIRLTY","DLF","PRESTIGE","NBCC","NCC"],
-    "ENERGY": ["CGPOWER","RELIANCE","GMRAIRPORT","JSWENERGY","ONGC","POWERGRID","BLUESTARCO","COALINDIA","SUZLON","IREDA",
-               "IOC","IGL","TATAPOWER","INOXWIND","MAZDOCK","PETRONET","SOLARINDS", "PREMIERENE","ADANIGREEN","NTPC","OIL","BDL","BPCL",
-               "NHPC","POWERINDIA","ADANIENSOL","TORNTPOWER"],
-    "AUTO": ["BOSCHLTD","TIINDIA","HEROMOTOCO","M&M","EICHERMOT","EXIDEIND","BAJAJ-AUTO","ASHOKLEY","MARUTI","TITAGARH",
-             "TVSMOTOR","MOTHERSON","SONACOMS","UNOMINDA","TMPV","BHARATFORG"],
-    "IT": ["KAYNES","TATATECH","LTIM","CYIENT","MPHASIS","TCS","CAMS","OFSS","HFCL","TECHM","TATAELXSI","HCLTECH","WIPRO",
-           "KPITTECH","COFORGE","PERSISTENT","INFY"],
-    "PHARMA": ["CIPLA","ALKEM","BIOCON","DRREDDY","MANKIND","TORNTPHARM","ZYDUSLIFE","DIVISLAB","LUPIN","PPLPHARMA",
-               "LAURUSLABS","FORTIS","AUROPHARMA","GLENMARK","SUNPHARMA"],
-    "FMCG": ["ETERNAL","MARICO","NYKAA","NESTLEIND","VBL","COLPAL","HINDUNILVR","PATANJALI","DMART","DABUR","GODREJCP",
-             "BRITANNIA","UNITDSPR","ITC","TATACONSUM","KALYANKJIL","SUPREMEIND"],
-    "CEMENT": ["SHREECEM","DALBHARAT","AMBUJACEM","ULTRACEMCO"],
-    "FINSERVICE": ["PNBHOUSING","BAJAJFINSV","ICICIPRULI","NUVAMA","HDFCLIFE","SAMMAANCAP","ANGELONE","RECLTD","BAJFINANCE",
-                   "BSE","MAXHEALTH","ICICIGI","HUDCO","CHOLAFIN","PFC","HDFCAMC","MUTHOOTFIN","PAYTM","JIOFIN","SHRIRAMFIN",
-                   "SBICARD","POLICYBZR","SBILIFE","LICHSGFIN","LICI","MANAPPURAM","IRFC","IIFL","CDSL"],
-    "BANK": ["IDFCFIRSTB","FEDERALBNK","INDUSINDBK","HDFCBANK","SBIN","KOTAKBANK","AUBANK","CANBK","BANDHANBNK","RBLBANK",
-             "ICICIBANK","AXISBANK"],
-    "NIFTY_50": ["ADANIENT","ADANIPORTS","APOLLOHOSP","ASIANPAINT","AXISBANK","BAJAJ-AUTO","BAJFINANCE","BAJAJFINSV","BEL",
-                "BHARTIARTL","CIPLA","COALINDIA","DRREDDY","EICHERMOT","GRASIM","HCLTECH","HDFCBANK","HDFCLIFE","HINDALCO",
-                "HINDUNILVR","ICICIBANK","INFY","INDIGO","ITC","JIOFIN","JSWSTEEL","KOTAKBANK","LT","M&M","MARUTI","MAXHEALTH",
-                "NESTLEIND","NTPC","ONGC","POWERGRID","RELIANCE","SBILIFE","SHRIRAMFIN","SBIN","SUNPHARMA","TCS","TATACONSUM",
-                "TATASTEEL","TECHM","TITAN","TRENT","ULTRACEMCO","WIPRO","TATAMOTORS","ETERNAL"],
-    "MIDCAP": ["RVNL","MPHASIS","HINDPETRO","PAGEIND","POLYCAB","LUPIN","IDFCFIRSTB","CONCOR","CUMMINSIND","VOLTAS",
-               "BHARATFORG","FEDERALBNK","INDHOTEL","COFORGE","ASHOKLEY","PERSISTENT","UPL","GODREJPROP","AUROPHARMA","AUBANK",
-               "ASTRAL","HDFCAMC","JUBLFOOD","PIIND"],
+    "METAL": [
+        "ADANIENT", "HINDALCO", "JSWSTEEL", "HINDZINC", "APLAPOLLO",
+        "TATASTEEL", "JINDALSTEL", "VEDL", "SAIL", "NATIONALUM", "NMDC"
+    ],
+    "PSUS": ["BANKINDIA", "PNB", "INDIANB", "SBIN", "UNIONBANK", "BANKBARODA", "CANBK"],
+    "REALTY": ["PHOENIXLTD", "GODREJPROP", "LODHA", "OBEROIRLTY", "DLF", "PRESTIGE", "NBCC"],
+    "ENERGY": [
+        "CGPOWER", "RELIANCE", "GMRAIRPORT", "JSWENERGY", "ONGC",
+        "POWERGRID", "BLUESTARCO", "COALINDIA", "SUZLON", "IREDA",
+        "IOC", "TATAPOWER", "INOXWIND", "MAZDOCK", "PETRONET",
+        "SOLARINDS", "PREMIERENE", "ADANIGREEN", "NTPC", "OIL", "BDL",
+        "BPCL", "NHPC", "POWERINDIA", "ADANIENSOL", "TORNTPOWER",
+        "WAAREEENER"
+    ],
+    "AUTO": [
+        "BOSCHLTD", "TIINDIA", "HEROMOTOCO", "M&M", "EICHERMOT",
+        "EXIDEIND", "BAJAJ-AUTO", "ASHOKLEY", "MARUTI",
+        "TVSMOTOR", "MOTHERSON", "SONACOMS", "UNOMINDA", "TMPV",
+        "BHARATFORG", "AMBER", "PGEL"
+    ],
+    "IT": [
+        "KAYNES", "TATATECH", "LTIM", "MPHASIS",
+        "TCS", "CAMS", "OFSS", "TECHM",
+        "TATAELXSI", "HCLTECH", "WIPRO",
+        "KPITTECH", "COFORGE", "PERSISTENT", "INFY"
+    ],
+    "PHARMA": [
+        "CIPLA", "ALKEM", "BIOCON", "DRREDDY", "MANKIND",
+        "TORNTPHARM", "ZYDUSLIFE", "DIVISLAB", "LUPIN",
+        "PPLPHARMA", "LAURUSLABS", "FORTIS",
+        "AUROPHARMA", "GLENMARK", "SUNPHARMA"
+    ],
+    "FMCG": [
+        "ETERNAL", "MARICO", "NYKAA", "NESTLEIND", "VBL",
+        "COLPAL", "HINDUNILVR", "PATANJALI", "DMART",
+        "DABUR", "GODREJCP", "BRITANNIA", "UNITDSPR",
+        "ITC", "TATACONSUM", "KALYANKJIL",
+        "SUPREMEIND", "SWIGGY"
+    ],
+    "CEMENT": ["SHREECEM", "DALBHARAT", "AMBUJACEM", "ULTRACEMCO"],
+   "FINSERVICE": [
+        "PNBHOUSING", "BAJAJFINSV", "ICICIPRULI", "NUVAMA",
+        "HDFCLIFE", "SAMMAANCAP", "ANGELONE", "RECLTD",
+        "BAJFINANCE", "BSE", "MAXHEALTH", "ICICIGI",
+        "HUDCO", "CHOLAFIN", "PFC", "HDFCAMC",
+        "MUTHOOTFIN", "PAYTM", "JIOFIN", "SHRIRAMFIN",
+        "SBICARD", "POLICYBZR", "SBILIFE",
+        "LICHSGFIN", "LICI", "MANAPPURAM",
+        "IRFC", "CDSL",
+        "360ONE", "KFINTECH", "BAJAJHLDNG",
+        "SBIN", "AXISBANK", "KOTAKBANK", "ICICIBANK", "IIFL"
+    ],
+    "BANK": [
+        "IDFCFIRSTB", "FEDERALBNK", "INDUSINDBK", "HDFCBANK",
+        "SBIN", "KOTAKBANK", "AUBANK", "CANBK",
+        "BANDHANBNK", "RBLBANK", "ICICIBANK", "AXISBANK", "BANKBARODA","INDIANB"
+    ],
+    "NIFTY_50": [
+        "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT",
+        "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV",
+        "BEL", "BHARTIARTL", "CIPLA", "COALINDIA", "DRREDDY",
+        "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK",
+        "HDFCLIFE", "HINDALCO", "HINDUNILVR", "ICICIBANK",
+        "INFY", "INDIGO", "ITC", "JIOFIN", "JSWSTEEL",
+        "KOTAKBANK", "LT", "M&M", "MARUTI", "MAXHEALTH",
+        "NESTLEIND", "NTPC", "ONGC", "POWERGRID", "RELIANCE",
+        "SBILIFE", "SHRIRAMFIN", "SBIN", "SUNPHARMA",
+        "TCS", "TATACONSUM", "TATASTEEL", "TECHM",
+        "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
+        "TATAMOTORS", "ETERNAL"
+    ],
+    "MIDCAP": [
+        "RVNL", "MPHASIS", "HINDPETRO", "PAGEIND", "POLYCAB",
+        "LUPIN", "IDFCFIRSTB", "CONCOR", "CUMMINSIND",
+        "VOLTAS", "BHARATFORG", "FEDERALBNK", "INDHOTEL",
+        "COFORGE", "ASHOKLEY", "PERSISTENT", "UPL",
+        "GODREJPROP", "AUROPHARMA", "AUBANK",
+        "ASTRAL", "HDFCAMC", "JUBLFOOD", "PIIND"
+    ],
 }
+
 ALL_SYMBOLS = sorted(set(sum(SECTOR_DEFINITIONS.values(), [])))
 
 ins = pd.DataFrame(kite.instruments("NSE"))
@@ -394,7 +446,7 @@ def compute_real_nifty_oi_pcr(strikes_around_atm: int = PCR_STRIKES_AROUND_ATM) 
         return None
 
     dfu = NFO_INS_DF
-    if dfu.empty:
+    if dfu is None or dfu.empty:
         return None
 
     expiry = min(dfu["expiry"].tolist()) if len(dfu) else None
@@ -465,6 +517,24 @@ def pcr_label_from_value(pcr: float) -> str:
 # =============================================================================
 # METRICS / TABLE BUILDERS
 # =============================================================================
+def _time_factor_ist_for_rvol(now_ist: Optional[datetime] = None) -> float:
+    """Fraction of session completed (9:15-15:30). Clamped."""
+    now_ist = now_ist or datetime.now(IST)
+    m_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    m_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    total_mins = 375.0
+    if now_ist < m_open:
+        mins_passed = 1.0
+    elif now_ist > m_close:
+        mins_passed = total_mins
+    else:
+        mins_passed = max(1.0, (now_ist - m_open).total_seconds() / 60.0)
+
+    tf = mins_passed / total_mins
+    return max(0.01, min(1.0, tf))
+
+
 def compute_rfactor_row_for_token(token: int):
     state = get_live_or_eod_state(token)
     if not state:
@@ -506,8 +576,8 @@ def compute_rfactor_row_for_token(token: int):
     return {
         "gap_pct": gap_pct,
         "pct_open": pct_open,
-        "rfactor": rfactor,
-        "dirr": dirr,
+        "rfactor": float(rfactor),
+        "dirr": float(dirr),
         "ltp": float(ltp),
         "day_open": float(day_open),
         "vol_today": float(vol_today),
@@ -630,6 +700,7 @@ def top_hot_now_rows(n: int = 15):
         tok = symbol_to_token.get(sym)
         if not tok:
             continue
+
         hr = _compute_hot_row_for_token(tok)
         if not hr:
             continue
@@ -664,27 +735,20 @@ def top_hot_now_rows(n: int = 15):
     return gainers, losers
 
 
-def compute_sector_dirr_mean():
-    out = {}
-    for sector, syms in SECTOR_DEFINITIONS.items():
-        vals = []
-        for s in syms:
-            tok = symbol_to_token.get(s)
-            if not tok:
-                continue
-            rr = compute_rfactor_row_for_token(tok)
-            if rr and rr.get("dirr") is not None:
-                vals.append(float(rr["dirr"]))
-        out[sector] = float(pd.Series(vals).mean()) if vals else 0.0
-    return out
-
-
-def sector_rows_sorted_by_rfactor(sector: str):
+def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
+    """
+    Sector stocks table sorted by:
+      - RFactor (default)
+      - RVOLm (paced RVOL stored in row as RVOL)
+    """
     rows = []
+    tf = _time_factor_ist_for_rvol(datetime.now(IST))
+
     for s in SECTOR_DEFINITIONS.get(sector, []):
         tok = symbol_to_token.get(s)
         if not tok:
             continue
+
         rr = compute_rfactor_row_for_token(tok)
         if not rr:
             continue
@@ -693,21 +757,126 @@ def sector_rows_sorted_by_rfactor(sector: str):
         day_open = rr["day_open"]
         chg_open = ltp - day_open
 
+        st = DAILY_STATS.get(tok) or {}
+        avg_vol_20 = st.get("avg_vol_20")
+        vol_today = rr.get("vol_today")
+
+        rvolm = None
+        try:
+            if avg_vol_20 and vol_today is not None and float(avg_vol_20) > 0:
+                expected = float(avg_vol_20) * float(tf)
+                rvolm = float(vol_today) / (expected + 1e-9)
+        except Exception:
+            rvolm = None
+
         rows.append({
             "Symbol": s,
             "Company": symbol_to_name.get(s, ""),
             "Price": round(float(ltp), 2),
             "Chg (O)": round(float(chg_open), 2),
             "Gap%": round(float(rr["gap_pct"]), 2),
-            "Chg% (O)": round(float(rr["pct_open"]), 2),
-            "RFactor": round(float(rr["rfactor"]), 2),
-            "DirR": round(float(rr["dirr"]), 2),
+            "RVOL": (float(rvolm) if rvolm is not None else None),
+            "RFactor": float(rr["rfactor"]),
+            "DirR": float(rr["dirr"]),
         })
 
     df = pd.DataFrame(rows)
     if df.empty:
         return []
-    return df.sort_values("RFactor", ascending=False, na_position="last").to_dict("records")
+
+    sb = (sort_by or "").strip().upper()
+    key = "RVOL" if sb in ("RVOL", "RVOLM") else "RFactor"
+    return df.sort_values(key, ascending=False, na_position="last").to_dict("records")
+
+
+# =============================================================================
+# SECTOR AGGREGATES: RVOLm SUM NET + RVOLm MEAN NET + DirR
+# =============================================================================
+def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
+    """
+    Per-stock paced RVOLm = vol_today / (avg_vol_20 * time_factor)
+
+    Stock sign proxy:
+      buy-side  if pct_open >= 0
+      sell-side if pct_open < 0
+
+    Sector metrics:
+      RVOLmNetSum  = Σbuy - Σsell
+      RVOLmNetMean = (Σbuy - Σsell) / N   (size-normalized)
+      DirR         = mean(dirr)
+    """
+    tf = _time_factor_ist_for_rvol(datetime.now(IST))
+
+    out: Dict[str, Dict[str, float]] = {}
+
+    for sector, syms in SECTOR_DEFINITIONS.items():
+        dirr_vals: List[float] = []
+
+        buy_sum = 0.0
+        sell_sum = 0.0
+        buy_n = 0
+        sell_n = 0
+
+        for s in syms:
+            tok = symbol_to_token.get(s)
+            if not tok:
+                continue
+
+            rr = compute_rfactor_row_for_token(tok)
+            if not rr:
+                continue
+
+            dirr_vals.append(float(rr["dirr"]))
+
+            st = DAILY_STATS.get(tok) or {}
+            avg_vol_20 = st.get("avg_vol_20")
+            vol_today = rr.get("vol_today")
+            pct_open = rr.get("pct_open")
+
+            try:
+                if pct_open is None or avg_vol_20 is None or vol_today is None:
+                    continue
+                if float(avg_vol_20) <= 0:
+                    continue
+
+                expected = float(avg_vol_20) * float(tf)
+                rvolm = float(vol_today) / (expected + 1e-9)
+
+                if float(pct_open) >= 0:
+                    buy_sum += rvolm
+                    buy_n += 1
+                else:
+                    sell_sum += rvolm
+                    sell_n += 1
+            except Exception:
+                continue
+
+        n_total = buy_n + sell_n
+        dirr_mean = float(pd.Series(dirr_vals).mean()) if dirr_vals else 0.0
+
+        net_sum = float(buy_sum - sell_sum)
+        gross_sum = float(buy_sum + sell_sum)
+
+        net_mean = float(net_sum / n_total) if n_total > 0 else 0.0
+        gross_mean = float(gross_sum / n_total) if n_total > 0 else 0.0
+
+        out[sector] = {
+            "DirR": float(dirr_mean),
+
+            "RVOLmBuySum": float(buy_sum),
+            "RVOLmSellSum": float(sell_sum),
+            "RVOLmNetSum": float(net_sum),
+            "RVOLmGrossSum": float(gross_sum),
+
+            "RVOLmNetMean": float(net_mean),
+            "RVOLmGrossMean": float(gross_mean),
+
+            "N": float(n_total),
+            "BuyN": float(buy_n),
+            "SellN": float(sell_n),
+        }
+
+    return out
 
 
 # =============================================================================
@@ -816,7 +985,7 @@ dash_app = dash.Dash(
 )
 server = dash_app.server
 
-# NEW: register Volm page callbacks (uses the same WS/state from this app.py)
+# register Volm page callbacks (uses the same WS/state from this app.py)
 web.register_volm(
     dash_app,
     BASE=BASE,
@@ -856,6 +1025,23 @@ def dial_component(prefix: str, title: str):
     )
 
 
+def _sector_grid_opts(sort_by: str) -> dict:
+    sb = (sort_by or "RFactor").strip().upper()
+    sort_model = (
+        [{"colId": "rvol", "sort": "desc"}] if sb in ("RVOL", "RVOLM") else
+        [{"colId": "rfactor", "sort": "desc"}]
+    )
+    return {
+        "domLayout": "autoHeight",
+        "animateRows": True,
+        "suppressMenuHide": True,
+        "suppressHeaderMenuButton": False,
+        "suppressHeaderFilterButton": False,
+        "alwaysShowVerticalScroll": False,
+        "sortModel": sort_model,  # force correct sort + header arrow
+    }
+
+
 def sectors_page():
     four_cols = [
         {
@@ -873,7 +1059,6 @@ def sectors_page():
             "field": "%Change",
             "headerName": "%CHG",
             "cellRenderer": "PctPill",
-            "width": 10,
             "minWidth": 150,
             "maxWidth": 150,
             "suppressSizeToFit": True,
@@ -885,7 +1070,6 @@ def sectors_page():
             "field": "RFactor",
             "headerName": "RFACTOR",
             "cellRenderer": "RfactorPill",
-            "width": 10,
             "minWidth": 125,
             "maxWidth": 170,
             "suppressSizeToFit": True,
@@ -897,7 +1081,6 @@ def sectors_page():
             "field": "Vol",
             "headerName": "VOLUME",
             "cellRenderer": "VolPill",
-            "width": 5,
             "minWidth": 140,
             "maxWidth": 190,
             "suppressSizeToFit": True,
@@ -911,8 +1094,6 @@ def sectors_page():
         "alwaysShowVerticalScroll": False,
         "animateRows": False,
         "suppressMenuHide": False,
-        "suppressHeaderMenuButton": False,
-        "suppressHeaderFilterButton": False,
         "onGridReady": {"function": "params.api.sizeColumnsToFit();"},
         "onGridSizeChanged": {"function": "params.api.sizeColumnsToFit();"},
     }
@@ -972,8 +1153,24 @@ def sectors_page():
             html.Hr(),
 
             html.H4("Sectors", className="page-title"),
+
+            dbc.RadioItems(
+                id="sectors-sort",
+                options=[
+                    {"label": "Sort: RVOLm", "value": "RVOLm"},             # Net SUM
+                    {"label": "Sort: RVOLm Mean", "value": "RVOLmMean"},    # Net / N
+                    {"label": "Sort: DirR", "value": "DirR"},
+                ],
+                value="RVOLm",  # default
+                inline=True,
+                className="mb-2",
+            ),
+
             html.Div(id="sector-bars", className="sector-bars-wrap"),
-            html.Div("Sectors sorted by AVG DirR (strength). Top tables sorted by RFactor.", className="hint"),
+            html.Div(
+                "RVOLm = (Σbuy−Σsell). RVOLm Mean = (Σbuy−Σsell)/N. DirR = mean directional rfactor.",
+                className="hint",
+            ),
 
             html.Hr(),
 
@@ -1062,13 +1259,35 @@ def sectors_page():
 
 
 def sector_page(sector: str):
+    # Display like multipliers: 0.45x, 4x, -23x
+    xfmt = (
+        "params.value==null ? '—' : "
+        "(((Math.abs(params.value) < 1) ? params.value.toFixed(2) : params.value.toFixed(0)) + 'x')"
+    )
+
     return html.Div(
         [
             dcc.Interval(id="refresh_sector", interval=2000, n_intervals=0),
             dbc.Row(
                 [
                     dbc.Col(html.H4(f"{sector} Stocks", className="page-title"), width=True),
-                    dbc.Col(dbc.Button("Back", href=f"{BASE}", color="secondary", outline=True, className="btn-back"), width="auto"),
+                    dbc.Col(
+                        dbc.RadioItems(
+                            id="sector-sort",
+                            options=[
+                                {"label": "Sort: RFactor", "value": "RFactor"},
+                                {"label": "Sort: RVOLm", "value": "RVOLm"},
+                            ],
+                            value="RFactor",
+                            inline=True,
+                            className="ms-2",
+                        ),
+                        width="auto",
+                    ),
+                    dbc.Col(
+                        dbc.Button("Back", href=f"{BASE}", color="secondary", outline=True, className="btn-back"),
+                        width="auto",
+                    ),
                 ],
                 className="align-items-center g-2",
             ),
@@ -1092,30 +1311,23 @@ def sector_page(sector: str):
                      "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"},
                      "minWidth": 115, "flex": 1},
 
-                    {"colId": "chgPctO", "field": "Chg% (O)", "headerName": "CHG% (O)", "type": "rightAligned",
-                     "valueFormatter": {"function": "fmtPct(params.value)"},
-                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"},
-                     "minWidth": 140, "flex": 1},
+                    {"colId": "rvol", "field": "RVOL", "headerName": "RVOLm", "type": "rightAligned",
+                     "cellRenderer": "RfactorPill",
+                     "valueFormatter": {"function": "fmt2(params.value)"},
+                     "minWidth": 130, "flex": 1},
 
                     {"colId": "rfactor", "field": "RFactor", "headerName": "RFACTOR", "type": "rightAligned",
-                     "valueFormatter": {"function": "fmt2(params.value)"}, "sort": "desc",
+                     "valueFormatter": {"function": xfmt},
                      "minWidth": 130, "flex": 1},
 
                     {"colId": "dirr", "field": "DirR", "headerName": "DIR R", "type": "rightAligned",
-                     "valueFormatter": {"function": "fmtSigned2(params.value)"},
+                     "valueFormatter": {"function": xfmt},
                      "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"},
                      "minWidth": 120, "flex": 1},
                 ],
                 rowData=[],
                 defaultColDef={"sortable": True, "filter": True, "resizable": True},
-                dashGridOptions={
-                    "domLayout": "autoHeight",
-                    "animateRows": True,
-                    "suppressMenuHide": True,
-                    "suppressHeaderMenuButton": False,
-                    "suppressHeaderFilterButton": False,
-                    "alwaysShowVerticalScroll": False,
-                },
+                dashGridOptions=_sector_grid_opts("RFactor"),
                 style={"height": "auto", "width": "100%"},
             ),
         ],
@@ -1147,15 +1359,12 @@ dash_app.layout = dbc.Container(
 def route(pathname):
     pn = (pathname or "").strip() or "/"
 
-    # Home
     if pn in ("/", "/dash", "/dash/", BASE):
         return sectors_page()
 
-    # NEW: Volm page (from web.py)
     if pn in (f"{BASE}volm", f"{BASE}volm/"):
         return web.volm_page(BASE)
 
-    # Sector
     if pn.startswith(f"{BASE}sector/"):
         sector = unquote(pn.split(f"{BASE}sector/")[1]).upper()
         return sector_page(sector) if sector in SECTOR_DEFINITIONS else dbc.Alert("Sector not found", color="danger")
@@ -1178,43 +1387,27 @@ def update_top_stats(_):
         d_err = DAILY_SEED_ERRORS
 
     chips = [
-        dbc.Badge(
-            "Offline" if offline else "Live",
-            color=("danger" if offline else "success"),
-            className="stat-badge",
+        dbc.Badge("Offline" if offline else "Live", color=("danger" if offline else "success"), className="stat-badge"),
+        html.A(
+            "Volm",
+            href=f"{BASE}volm",
+            target="_blank",
+            className="stat-chip",
+            style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"},
+        ),
+        html.A(
+            "Rotation ⬈",
+            href="/rotation/",
+            target="_blank",
+            className="stat-chip",
+            style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"},
         ),
     ]
 
-    chips.append(
-    html.A(
-        "Volm",
-        href=f"{BASE}volm",
-        target="_blank",
-        className="stat-chip",
-        style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"},
-    )
-)
-
-    # Rotation link
-    rotation_link = html.A(
-        "Rotation ⬈",
-        href="/rotation/",
-        target="_blank",
-        className="stat-chip",
-        style={
-            "textDecoration": "none",
-            "color": "var(--text-muted)",
-            "cursor": "pointer",
-            "marginLeft": "8px",
-        },
-    )
-    chips.append(rotation_link)
-
-    # Seeding Progress
     if not d_done:
         chips.append(
             dbc.Badge(
-                f"Seeding {d_done_n}/{d_total}",
+                f"Seeding {d_done_n}/{d_total} (err {d_err})",
                 color="warning",
                 className="stat-badge",
                 style={"marginLeft": "8px"},
@@ -1226,40 +1419,78 @@ def update_top_stats(_):
         html.Div(f"Ticks {tot:,}", className="stat-chip"),
         html.Div(f"Updated {updated_str}", className="stat-chip"),
     ]
-
     return html.Div(chips, className="top-stats-wrap")
 
 
-@dash_app.callback(Output("sector-bars", "children"), Input("refresh_sectors", "n_intervals"))
-def render_sector_bars(_):
-    with LOCK:
-        scores = compute_sector_dirr_mean()
+# =============================================================================
+# Sector bars (HOME)
+# =============================================================================
+@dash_app.callback(
+    Output("sector-bars", "children"),
+    Input("refresh_sectors", "n_intervals"),
+    Input("sectors-sort", "value"),
+)
+def render_sector_bars(_, sort_by):
+    sort_by = (sort_by or "RVOLm").strip()
 
-    items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    max_abs = max([abs(v) for _, v in items] + [1e-6])
+    try:
+        with LOCK:
+            agg = compute_sector_aggregates()
 
-    children = []
-    for sector, val in items:
-        h = int(10 + 150 * (abs(val) / max_abs))
-        h = min(h, 150)
-        cls = "bar-green" if val >= 0 else "bar-red"
-        label = f"{val:+.2f}×"
+        if sort_by == "DirR":
+            metric = "DirR"
+        elif sort_by == "RVOLmMean":
+            metric = "RVOLmNetMean"
+        else:
+            metric = "RVOLmNetSum"
 
-        children.append(
-            dcc.Link(
-                href=f"{BASE}sector/{sector}",
-                className="sector-link",
-                children=html.Div(
-                    [
-                        html.Div(label, className="bar-value"),
-                        html.Div(className=f"glow-bar {cls}", style={"height": f"{h}px"}),
-                        html.Div(sector.title(), className="bar-name"),
-                    ],
-                    className="sector-bar-card",
-                ),
+        items = sorted(agg.items(), key=lambda kv: float(kv[1].get(metric, 0.0)), reverse=True)
+        if not items:
+            return [html.Div("Loading sector bars…", className="hint")]
+
+        max_ref = max([abs(float(v.get(metric, 0.0))) for _, v in items] + [1e-6])
+
+        children = []
+        for sector, m in items:
+            val = float(m.get(metric, 0.0))
+            h = int(10 + 150 * (abs(val) / max_ref))
+            h = min(h, 150)
+
+            if metric in ("RVOLmNetSum", "RVOLmNetMean"):
+                cls = "bar-green" if val >= 0 else "bar-red"
+                label = f"{val:+.2f}×"
+                title = (
+                    f"RVOLm Net SUM {float(m.get('RVOLmNetSum', 0.0)):+.2f}× | "
+                    f"Net MEAN {float(m.get('RVOLmNetMean', 0.0)):+.2f}× | "
+                    f"Gross MEAN {float(m.get('RVOLmGrossMean', 0.0)):.2f}× | "
+                    f"N {int(float(m.get('N', 0.0)))} (buy {int(float(m.get('BuyN', 0.0)))}, sell {int(float(m.get('SellN', 0.0)))})"
+                )
+            else:
+                cls = "bar-green" if val >= 0 else "bar-red"
+                label = f"{val:+.2f}×"
+                title = f"DirR {val:+.2f}× | RVOLm Net MEAN {float(m.get('RVOLmNetMean', 0.0)):+.2f}×"
+
+            children.append(
+                dcc.Link(
+                    href=f"{BASE}sector/{sector}",
+                    className="sector-link",
+                    children=html.Div(
+                        [
+                            html.Div(label, className="bar-value"),
+                            html.Div(className=f"glow-bar {cls}", style={"height": f"{h}px"}),
+                            html.Div(sector.title(), className="bar-name"),
+                        ],
+                        className="sector-bar-card",
+                        title=title,
+                    ),
+                )
             )
-        )
-    return children
+
+        return children
+
+    except Exception:
+        log.exception("render_sector_bars crashed")
+        return [html.Div("Sector bars error (see logs).", className="hint")]
 
 
 # =============================================================================
@@ -1400,20 +1631,24 @@ def update_hot_now(_):
 
 @dash_app.callback(
     Output("grid", "rowData"),
+    Output("grid", "dashGridOptions"),
     Input("refresh_sector", "n_intervals"),
     Input("url", "pathname"),
+    Input("sector-sort", "value"),
 )
-def update_grid(_, pathname):
+def update_grid(_n, pathname, sort_by):
     pn = (pathname or "").strip()
     if not pn.startswith(f"{BASE}sector/"):
-        return dash.no_update
+        return dash.no_update, dash.no_update
 
     sector = unquote(pn.split(f"{BASE}sector/")[1]).upper()
     if sector not in SECTOR_DEFINITIONS:
-        return []
+        return [], _sector_grid_opts(sort_by)
 
     with LOCK:
-        return sector_rows_sorted_by_rfactor(sector)
+        rows = sector_rows_sorted(sector, sort_by=sort_by)
+
+    return rows, _sector_grid_opts(sort_by)
 
 
 # =============================================================================
