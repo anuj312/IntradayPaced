@@ -1136,3 +1136,165 @@ td:first-child { text-align: left; }
   letter-spacing: 0.75px;
 }
 
+/* =========================================================
+   Force BLUE "active pill" highlight for sectors sort radios
+   (background/border/glow like your screenshot)
+   Put this at END of theme.css
+   ========================================================= */
+
+/* HOME: Sectors sort (RVOLm / RVOLm Mean / DirR) */
+#sectors-sort .form-check-input:checked + .form-check-label {
+  background: linear-gradient(180deg, rgba(13,110,253,0.28), rgba(13,110,253,0.12)) !important;
+  border-color: rgba(13,110,253,0.75) !important;
+  box-shadow:
+    0 0 0 1px rgba(13,110,253,0.35),
+    0 0 18px rgba(13,110,253,0.35) !important;
+}
+
+/* Sector page: Sort (RFactor / RVOLm) */
+#sector-sort .form-check-input:checked + .form-check-label {
+  background: linear-gradient(180deg, rgba(13,110,253,0.28), rgba(13,110,253,0.12)) !important;
+  border-color: rgba(13,110,253,0.75) !important;
+  box-shadow:
+    0 0 0 1px rgba(13,110,253,0.35),
+    0 0 18px rgba(13,110,253,0.35) !important;
+}
+
+/* (Optional) If some earlier CSS sets RVOLm specifically to green,
+   this extra-specific rule helps override it. */
+#sectors-sort input[type="radio"]:checked + label {
+  background: linear-gradient(180deg, rgba(13,110,253,0.28), rgba(13,110,253,0.12)) !important;
+  border-color: rgba(13,110,253,0.75) !important;
+}
+
+/* =========================================================
+   HOME page (Sectors) sort pills -> BLUE
+   ========================================================= */
+#sectors-sort .form-check-input:checked + .form-check-label,
+#sectors-sort input[type="radio"]:checked + label {
+  background: linear-gradient(180deg, rgba(13,110,253,0.28), rgba(13,110,253,0.12)) !important;
+  border-color: rgba(13,110,253,0.80) !important;
+  box-shadow:
+    0 0 0 1px rgba(13,110,253,0.35),
+    0 0 18px rgba(13,110,253,0.35) !important;
+}
+
+
+/* =========================================================
+   Sector Stocks page (Sort: RFactor / RVOLm) pills -> PURPLE
+   ========================================================= */
+#sector-sort .form-check-input:checked + .form-check-label,
+#sector-sort input[type="radio"]:checked + label {
+  background: linear-gradient(180deg, rgba(111,66,193,0.32), rgba(111,66,193,0.14)) !important; /* purple */
+  border-color: rgba(111,66,193,0.85) !important;
+  box-shadow:
+    0 0 0 1px rgba(111,66,193,0.40),
+    0 0 18px rgba(111,66,193,0.40) !important;
+}
+
+/* optional: purple focus ring on Sector Stocks sort */
+#sector-sort .form-check-input:focus {
+  box-shadow: 0 0 0 0.2rem rgba(111,66,193,0.25) !important;
+}
+
+/* ============================
+   Ultra Premium Sector Heading
+   (Metallic Gold • clean)
+   Use with: className="page-title sector-title"
+   ============================ */
+
+.sector-title{
+  position: relative;
+  display: inline-block;
+
+  margin: 0;
+  padding: 10px 16px 12px;
+  font-size: 28px;          /* change to 20px if you want smaller */
+  line-height: 1.15;
+
+  border-radius: 16px;
+
+  /* dark premium plate behind */
+  background: linear-gradient(
+    180deg,
+    rgba(255,255,255,0.05) 0%,
+    rgba(255,255,255,0.02) 55%,
+    rgba(0,0,0,0.16) 100%
+  );
+  border: 1px solid rgba(255,255,255,0.10);
+
+  backdrop-filter: blur(10px) saturate(1.15);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+
+  /* depth (not glow) */
+  box-shadow:
+    0 14px 32px rgba(0,0,0,0.50),
+    inset 0 1px 0 rgba(255,255,255,0.06);
+
+  /* typography */
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+
+  /* metallic gold text */
+  color: transparent;
+  background-image: linear-gradient(
+    110deg,
+    #7a5b12 0%,
+    #caa349 12%,
+    #ffe9a8 22%,
+    #d7b25a 35%,
+    #fff2bf 48%,
+    #b88b1d 62%,
+    #ffefb6 74%,
+    #c79a2e 88%,
+    #6a4c0c 100%
+  );
+  background-size: 100% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+/* metallic sheen pass across the letters */
+.sector-title::before{
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  pointer-events: none;
+
+  background: linear-gradient(
+    115deg,
+    rgba(255,255,255,0.00) 0%,
+    rgba(255,255,255,0.00) 35%,
+    rgba(255,255,255,0.12) 48%,
+    rgba(255,255,255,0.00) 60%,
+    rgba(255,255,255,0.00) 100%
+  );
+  mix-blend-mode: overlay;
+  opacity: 0.75;
+}
+
+/* subtle bottom accent line (gold, clean) */
+.sector-title::after{
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 7px;
+  height: 2px;
+  border-radius: 999px;
+  pointer-events: none;
+
+  background: linear-gradient(
+    90deg,
+    rgba(255,232,168,0.00),
+    rgba(255,232,168,0.35),
+    rgba(255,232,168,0.00)
+  );
+  opacity: 0.9;
+}
+

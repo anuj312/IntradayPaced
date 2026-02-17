@@ -1289,7 +1289,7 @@ def sector_page(sector: str):
             # Title + Sort row
             dbc.Row(
                 [
-                    dbc.Col(html.H4(f"{sector} Stocks", className="page-title"), width=True),
+                    dbc.Col(html.H4(f"{sector} Stocks", className="page-title sector-title"), width=True),
                     dbc.Col(
                         dbc.RadioItems(
                             id="sector-sort",

@@ -113,7 +113,6 @@ def _compute_volm_df(ctx: Dict[str, Any]) -> pd.DataFrame:
 
             pct_open = (ltp - op) / op * 100.0
 
-            # Intraday range context
             rng = max(0.0, hi - lo)
             day_range_pct = (rng / op) * 100.0
 
@@ -135,7 +134,7 @@ def _compute_volm_df(ctx: Dict[str, Any]) -> pd.DataFrame:
             rows.append(
                 {
                     "Symbol": sym,
-                    "%Change": round(pct_open, 2),
+                    "%Change": round(float(pct_open), 2),
                     "Vol": int(vol_today),
                     "RVOL": float(rvol_paced),
                     "_pos": float(pos_in_range),
@@ -155,6 +154,13 @@ def _volm_tables(ctx: Dict[str, Any]) -> Tuple[list, list, list, list, float, fl
       breakout_rows, breakdown_rows, buy_rvol_rows, sell_rvol_rows, shock_th, extreme_th
     """
     df = _compute_volm_df(ctx)
+    if df.empty:
+        return [], [], [], [], 2.0, 3.0
+
+    # Ensure numeric (defensive)
+    df["RVOL"] = pd.to_numeric(df["RVOL"], errors="coerce")
+    df["%Change"] = pd.to_numeric(df["%Change"], errors="coerce")
+    df = df.dropna(subset=["RVOL", "%Change"])
     if df.empty:
         return [], [], [], [], 2.0, 3.0
 
@@ -192,7 +198,7 @@ def _volm_tables(ctx: Dict[str, Any]) -> Tuple[list, list, list, list, float, fl
         .to_dict("records")
     )
 
-    # Buying vs Selling RVOL (proxy by sign of %Change from open)
+    # Top 15 BUYING/SELLING RVOL (NO shock-threshold filter; always show top lists)
     buy_rvol = (
         df[df["%Change"] >= 0]
         .sort_values("RVOL", ascending=False)
@@ -258,12 +264,12 @@ def volm_page(BASE: str):
         },
     ]
 
-    # Make it show ~10 rows and scroll to 15
     ROW_H = 34
     HDR_H = 34
     GRID_10ROWS_HEIGHT = f"{HDR_H + (10 * ROW_H) + 4}px"
 
     grid_opts = {
+        "immutableData": True,  # helps repaint updates when getRowId is set
         "getRowId": {"function": "params.data.Symbol"},
         "alwaysShowVerticalScroll": False,
         "animateRows": False,
@@ -299,26 +305,34 @@ def volm_page(BASE: str):
             ),
             html.Div(id="volm-thresholds", className="hint", style={"marginBottom": "10px"}),
 
+            # TOP: BUY / SELL RVOL
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            html.H6("Top 15 BUYING RVOL (RVOL high + %CHG ≥ 0)", className="mt-1"),
+                            grid("volm-buy-rvol", height=GRID_10ROWS_HEIGHT),
+                        ],
+                        md=6,
+                    ),
+                    dbc.Col(
+                        [
+                            html.H6("Top 15 SELLING RVOL (RVOL high + %CHG < 0)", className="mt-1"),
+                            grid("volm-sell-rvol", height=GRID_10ROWS_HEIGHT),
+                        ],
+                        md=6,
+                    ),
+                ],
+                className="g-2",
+            ),
+
+            html.Hr(),
+
+            # BELOW: BREAKOUT / BREAKDOWN shockers
             dbc.Row(
                 [
                     dbc.Col([html.H6("Breakout Vol Shockers", className="mt-1"), grid("volm-breakout")], md=6),
                     dbc.Col([html.H6("Breakdown Vol Shockers", className="mt-1"), grid("volm-breakdown")], md=6),
-                ],
-                className="g-2",
-            ),
-            html.Hr(),
-            dbc.Row(
-                [
-                    dbc.Col(
-                        [html.H6("Top 15 BUYING RVOL (RVOL high + %CHG ≥ 0)", className="mt-1"),
-                         grid("volm-buy-rvol", height=GRID_10ROWS_HEIGHT)],
-                        md=6,
-                    ),
-                    dbc.Col(
-                        [html.H6("Top 15 SELLING RVOL (RVOL high + %CHG < 0)", className="mt-1"),
-                         grid("volm-sell-rvol", height=GRID_10ROWS_HEIGHT)],
-                        md=6,
-                    ),
                 ],
                 className="g-2",
             ),
@@ -340,7 +354,8 @@ def register_volm(dash_app, BASE: str, ctx: Dict[str, Any]) -> None:
     def _update_volm(_n):
         try:
             b1, b2, buy15, sell15, th_shock, th_extreme = _volm_tables(ctx)
-            hint = f"Thresholds (dynamic): Shock RVOL ≥ {th_shock:.2f} | Extreme RVOL ≥ {th_extreme:.2f}"
+            now_txt = datetime.now(ctx["IST"]).strftime("%H:%M:%S")
+            hint = f"[{now_txt}] Thresholds (dynamic): Shock RVOL ≥ {th_shock:.2f} | Extreme RVOL ≥ {th_extreme:.2f}"
             return b1, b2, buy15, sell15, hint
         except Exception:
             return [], [], [], [], "Volm loading…"
