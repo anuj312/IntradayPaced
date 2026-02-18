@@ -34,7 +34,7 @@ from kiteconnect import KiteConnect, KiteTicker
 
 # Dash page plugins
 import web
-import contribution
+import rfactor
 
 
 # =============================================================================
@@ -194,7 +194,7 @@ TPS_BUCKETS = deque()
 
 HOT_HISTORY: Dict[int, deque] = {}  # token -> deque[(epoch, ltp, cumvol)]
 
-EOD_SNAPSHOT: Dict[int, Dict[str, Any]] = {}  # token -> eod dict
+EOD_SNAPSHOT: Dict[int, Dict[str, Any]] = {}
 DAILY_STATS: Dict[int, Dict[str, Optional[float]]] = {}
 
 DAILY_SEED_STARTED = False
@@ -413,7 +413,7 @@ def _chunk(lst: List[str], n: int):
         yield lst[i: i + n]
 
 
-def _quote_many(keys: List[str], chunk_size: int = 180) -> dict:
+def _quote_many(keys: List[str], chunk_size: int = PCR_QUOTE_CHUNK) -> dict:
     out = {}
     for ch in _chunk(keys, chunk_size):
         out.update(kite.quote(ch))
@@ -536,6 +536,14 @@ def _time_factor_ist_for_rvol(now_ist: Optional[datetime] = None) -> float:
 
 
 def compute_rfactor_row_for_token(token: int):
+    """
+    ORIGINAL (UNPACED) RFACTOR:
+      rvol       = vol_today / avg_vol_20
+      rangeFact  = range_today / avg_range_20
+      moveFact   = abs(%from_open) / avg_abs_oc_ret_20
+      RFactor = rvol * rangeFact * moveFact
+      DirR    = sign(%from_open) * RFactor
+    """
     state = get_live_or_eod_state(token)
     if not state:
         return None
@@ -570,13 +578,74 @@ def compute_rfactor_row_for_token(token: int):
     range_factor = max(0.0, float(range_today)) / (float(avg_range_20) + eps)
     move_factor = abs(float(pct_open)) / (float(avg_abs_oc_ret_20) + eps)
 
-    rfactor = rvol * range_factor * move_factor
-    dirr = (1.0 if pct_open >= 0 else -1.0) * rfactor
+    rfactor_val = rvol * range_factor * move_factor
+    dirr = (1.0 if pct_open >= 0 else -1.0) * rfactor_val
 
     return {
         "gap_pct": gap_pct,
         "pct_open": pct_open,
-        "rfactor": float(rfactor),
+        "rfactor": float(rfactor_val),
+        "dirr": float(dirr),
+        "ltp": float(ltp),
+        "day_open": float(day_open),
+        "vol_today": float(vol_today),
+    }
+
+
+def compute_rfactor_row_for_token_paced(token: int):
+    """
+    PACED RFACTOR (used only by /dash/rfactor page):
+      rvolm      = vol_today / (avg_vol_20 * time_factor)
+      rangeFact  = range_today / avg_range_20
+      moveFact   = abs(%from_open) / avg_abs_oc_ret_20
+      RFactor = rvolm * rangeFact * moveFact
+      DirR    = sign(%from_open) * RFactor
+    """
+    state = get_live_or_eod_state(token)
+    if not state:
+        return None
+
+    ltp, vol_today, ohlc = state
+    prev_close = ohlc.get("close")
+    day_open = ohlc.get("open")
+    day_high = ohlc.get("high")
+    day_low = ohlc.get("low")
+
+    if prev_close is None or day_open is None:
+        return None
+
+    prev_close = float(prev_close)
+    day_open = float(day_open)
+    if prev_close <= 0 or day_open <= 0 or ltp <= 0:
+        return None
+
+    gap_pct = ((day_open - prev_close) / prev_close) * 100.0
+    pct_open = ((ltp - day_open) / day_open) * 100.0
+    range_today = (float(day_high) - float(day_low)) if (day_high is not None and day_low is not None) else 0.0
+
+    st = DAILY_STATS.get(token) or {}
+    avg_vol_20 = st.get("avg_vol_20")
+    avg_range_20 = st.get("avg_range_20")
+    avg_abs_oc_ret_20 = st.get("avg_abs_oc_ret_20")
+    if not avg_vol_20 or not avg_range_20 or not avg_abs_oc_ret_20:
+        return None
+
+    eps = 1e-9
+    tf = _time_factor_ist_for_rvol(datetime.now(IST))
+    expected = float(avg_vol_20) * float(tf)
+    rvolm = float(vol_today) / (expected + eps)
+
+    range_factor = max(0.0, float(range_today)) / (float(avg_range_20) + eps)
+    move_factor = abs(float(pct_open)) / (float(avg_abs_oc_ret_20) + eps)
+
+    rfactor_val = rvolm * range_factor * move_factor
+    dirr = (1.0 if pct_open >= 0 else -1.0) * rfactor_val
+
+    return {
+        "gap_pct": gap_pct,
+        "pct_open": pct_open,
+        "rvolm": float(rvolm),
+        "rfactor": float(rfactor_val),
         "dirr": float(dirr),
         "ltp": float(ltp),
         "day_open": float(day_open),
@@ -736,11 +805,6 @@ def top_hot_now_rows(n: int = 15):
 
 
 def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
-    """
-    Sector stocks table sorted by:
-      - RFactor (default)
-      - RVOLm (paced RVOL stored in row as RVOL)
-    """
     rows = []
     tf = _time_factor_ist_for_rvol(datetime.now(IST))
 
@@ -789,24 +853,8 @@ def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
     return df.sort_values(key, ascending=False, na_position="last").to_dict("records")
 
 
-# =============================================================================
-# SECTOR AGGREGATES: RVOLm SUM NET + RVOLm MEAN NET + DirR
-# =============================================================================
 def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
-    """
-    Per-stock paced RVOLm = vol_today / (avg_vol_20 * time_factor)
-
-    Stock sign proxy:
-      buy-side  if pct_open >= 0
-      sell-side if pct_open < 0
-
-    Sector metrics:
-      RVOLmNetSum  = Σbuy - Σsell
-      RVOLmNetMean = (Σbuy - Σsell) / N   (size-normalized)
-      DirR         = mean(dirr)
-    """
     tf = _time_factor_ist_for_rvol(datetime.now(IST))
-
     out: Dict[str, Dict[str, float]] = {}
 
     for sector, syms in SECTOR_DEFINITIONS.items():
@@ -862,15 +910,12 @@ def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
 
         out[sector] = {
             "DirR": float(dirr_mean),
-
             "RVOLmBuySum": float(buy_sum),
             "RVOLmSellSum": float(sell_sum),
             "RVOLmNetSum": float(net_sum),
             "RVOLmGrossSum": float(gross_sum),
-
             "RVOLmNetMean": float(net_mean),
             "RVOLmGrossMean": float(gross_mean),
-
             "N": float(n_total),
             "BuyN": float(buy_n),
             "SellN": float(sell_n),
@@ -879,9 +924,6 @@ def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
     return out
 
 
-# =============================================================================
-# SENTIMENT
-# =============================================================================
 def compute_market_sentiment_proxy():
     adv = dec = unch = 0
 
@@ -985,7 +1027,6 @@ dash_app = dash.Dash(
 )
 server = dash_app.server
 
-# register Volm page callbacks (uses the same WS/state from this app.py)
 web.register_volm(
     dash_app,
     BASE=BASE,
@@ -999,17 +1040,15 @@ web.register_volm(
     },
 )
 
-# register Contribution page callbacks
-contribution.register_contribution(
+rfactor.register_rfactor(
     dash_app,
     BASE=BASE,
     ctx={
         "LOCK": LOCK,
-        "IST": IST,
-        "SECTOR_DEFINITIONS": SECTOR_DEFINITIONS,
+        "IST": IST,  # for 09:20 gating in rfactor.py
+        "ALL_SYMBOLS": ALL_SYMBOLS,
         "symbol_to_token": symbol_to_token,
-        "DAILY_STATS": DAILY_STATS,
-        "compute_rfactor_row_for_token": compute_rfactor_row_for_token,
+        "compute_rfactor_row_for_token_paced": compute_rfactor_row_for_token_paced,
     },
 )
 
@@ -1042,8 +1081,8 @@ def dial_component(prefix: str, title: str):
 def _sector_grid_opts(sort_by: str) -> dict:
     sb = (sort_by or "RFactor").strip().upper()
     sort_model = (
-        [{"colId": "rvol", "sort": "desc"}] if sb in ("RVOL", "RVOLM") else
-        [{"colId": "rfactor", "sort": "desc"}]
+        [{"colId": "rvol", "sort": "desc"}] if sb in ("RVOL", "RVOLM")
+        else [{"colId": "rfactor", "sort": "desc"}]
     )
     return {
         "domLayout": "autoHeight",
@@ -1171,8 +1210,8 @@ def sectors_page():
             dbc.RadioItems(
                 id="sectors-sort",
                 options=[
-                    {"label": "Sort: RVOLm", "value": "RVOLm"},             # Net SUM
-                    {"label": "Sort: RVOLm Mean", "value": "RVOLmMean"},    # Net / N
+                    {"label": "Sort: RVOLm", "value": "RVOLm"},
+                    {"label": "Sort: RVOLm Mean", "value": "RVOLmMean"},
                     {"label": "Sort: DirR", "value": "DirR"},
                 ],
                 value="RVOLm",
@@ -1322,84 +1361,16 @@ def sector_page(sector: str):
                 id="grid",
                 className="ag-theme-alpine-dark grid-wrap",
                 columnDefs=[
-                    {
-                        "colId": "stock",
-                        "field": "Symbol",
-                        "headerName": "STOCK",
-                        "pinned": "left",
-                        "cellRenderer": "StockCell",
-                        "minWidth": 260,
-                    },
-                    {
-                        "colId": "price",
-                        "field": "Price",
-                        "headerName": "PRICE",
-                        "type": "rightAligned",
-                        "valueFormatter": {"function": "fmt2(params.value)"},
-                        "minWidth": 120,
-                        "flex": 1,
-                    },
-                    {
-                        "colId": "chgO",
-                        "field": "Chg (O)",
-                        "headerName": "CHG (O)",
-                        "type": "rightAligned",
-                        "valueFormatter": {"function": "fmtSigned2(params.value)"},
-                        "cellClassRules": {
-                            "cell-pos": "params.value > 0",
-                            "cell-neg": "params.value < 0",
-                            "cell-zero": "params.value === 0",
-                        },
-                        "minWidth": 130,
-                        "flex": 1,
-                    },
-                    {
-                        "colId": "gapPct",
-                        "field": "Gap%",
-                        "headerName": "GAP%",
-                        "type": "rightAligned",
-                        "valueFormatter": {"function": "fmtPct(params.value)"},
-                        "cellClassRules": {
-                            "cell-pos": "params.value > 0",
-                            "cell-neg": "params.value < 0",
-                            "cell-zero": "params.value === 0",
-                        },
-                        "minWidth": 115,
-                        "flex": 1,
-                    },
-                    {
-                        "colId": "rvol",
-                        "field": "RVOL",
-                        "headerName": "RVOLm",
-                        "type": "rightAligned",
-                        "cellRenderer": "RfactorPill",
-                        "valueFormatter": {"function": "fmt2(params.value)"},
-                        "minWidth": 130,
-                        "flex": 1,
-                    },
-                    {
-                        "colId": "rfactor",
-                        "field": "RFactor",
-                        "headerName": "RFACTOR",
-                        "type": "rightAligned",
-                        "valueFormatter": {"function": xfmt},
-                        "minWidth": 130,
-                        "flex": 1,
-                    },
-                    {
-                        "colId": "dirr",
-                        "field": "DirR",
-                        "headerName": "DIR R",
-                        "type": "rightAligned",
-                        "valueFormatter": {"function": xfmt},
-                        "cellClassRules": {
-                            "cell-pos": "params.value > 0",
-                            "cell-neg": "params.value < 0",
-                            "cell-zero": "params.value === 0",
-                        },
-                        "minWidth": 120,
-                        "flex": 1,
-                    },
+                    {"colId": "stock", "field": "Symbol", "headerName": "STOCK", "pinned": "left", "cellRenderer": "StockCell", "minWidth": 260},
+                    {"colId": "price", "field": "Price", "headerName": "PRICE", "type": "rightAligned", "valueFormatter": {"function": "fmt2(params.value)"}, "minWidth": 120, "flex": 1},
+                    {"colId": "chgO", "field": "Chg (O)", "headerName": "CHG (O)", "type": "rightAligned", "valueFormatter": {"function": "fmtSigned2(params.value)"},
+                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"}, "minWidth": 130, "flex": 1},
+                    {"colId": "gapPct", "field": "Gap%", "headerName": "GAP%", "type": "rightAligned", "valueFormatter": {"function": "fmtPct(params.value)"},
+                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"}, "minWidth": 115, "flex": 1},
+                    {"colId": "rvol", "field": "RVOL", "headerName": "RVOLm", "type": "rightAligned", "cellRenderer": "RfactorPill", "valueFormatter": {"function": "fmt2(params.value)"}, "minWidth": 130, "flex": 1},
+                    {"colId": "rfactor", "field": "RFactor", "headerName": "RFACTOR", "type": "rightAligned", "valueFormatter": {"function": xfmt}, "minWidth": 130, "flex": 1},
+                    {"colId": "dirr", "field": "DirR", "headerName": "DIR R", "type": "rightAligned", "valueFormatter": {"function": xfmt},
+                     "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0", "cell-zero": "params.value === 0"}, "minWidth": 120, "flex": 1},
                 ],
                 rowData=[],
                 defaultColDef={"sortable": True, "filter": True, "resizable": True},
@@ -1441,8 +1412,8 @@ def route(pathname):
     if pn in (f"{BASE}volm", f"{BASE}volm/"):
         return web.volm_page(BASE)
 
-    if pn in (f"{BASE}contribution", f"{BASE}contribution/"):
-        return contribution.contribution_page(BASE)
+    if pn in (f"{BASE}rfactor", f"{BASE}rfactor/"):
+        return rfactor.rfactor_page(BASE)
 
     if pn.startswith(f"{BASE}sector/"):
         sector = unquote(pn.split(f"{BASE}sector/")[1]).upper()
@@ -1467,20 +1438,10 @@ def update_top_stats(_):
 
     chips = [
         dbc.Badge("Offline" if offline else "Live", color=("danger" if offline else "success"), className="stat-badge"),
-        html.A(
-            "Volm",
-            href=f"{BASE}volm",
-            target="_blank",
-            className="stat-chip",
-            style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"},
-        ),
-        html.A(
-            "Contribution ⬈",
-            href=f"{BASE}contribution",
-            target="_blank",
-            className="stat-chip",
-            style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"},
-        ),
+        html.A("Volm", href=f"{BASE}volm", target="_blank", className="stat-chip",
+               style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"}),
+        html.A("RFactor ⬈", href=f"{BASE}rfactor", target="_blank", className="stat-chip",
+               style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"}),
     ]
 
     if not d_done:
@@ -1501,9 +1462,6 @@ def update_top_stats(_):
     return html.Div(chips, className="top-stats-wrap")
 
 
-# =============================================================================
-# Sector bars (HOME)
-# =============================================================================
 @dash_app.callback(
     Output("sector-bars", "children"),
     Input("refresh_sectors", "n_intervals"),
@@ -1535,9 +1493,10 @@ def render_sector_bars(_, sort_by):
             h = int(10 + 150 * (abs(val) / max_ref))
             h = min(h, 150)
 
+            cls = "bar-green" if val >= 0 else "bar-red"
+            label = f"{val:+.2f}×"
+
             if metric in ("RVOLmNetSum", "RVOLmNetMean"):
-                cls = "bar-green" if val >= 0 else "bar-red"
-                label = f"{val:+.2f}×"
                 title = (
                     f"RVOLm Net SUM {float(m.get('RVOLmNetSum', 0.0)):+.2f}× | "
                     f"Net MEAN {float(m.get('RVOLmNetMean', 0.0)):+.2f}× | "
@@ -1545,8 +1504,6 @@ def render_sector_bars(_, sort_by):
                     f"N {int(float(m.get('N', 0.0)))} (buy {int(float(m.get('BuyN', 0.0)))}, sell {int(float(m.get('SellN', 0.0)))})"
                 )
             else:
-                cls = "bar-green" if val >= 0 else "bar-red"
-                label = f"{val:+.2f}×"
                 title = f"DirR {val:+.2f}× | RVOLm Net MEAN {float(m.get('RVOLmNetMean', 0.0)):+.2f}×"
 
             children.append(
@@ -1572,9 +1529,6 @@ def render_sector_bars(_, sort_by):
         return [html.Div("Sector bars error (see logs).", className="hint")]
 
 
-# =============================================================================
-# Dial helpers
-# =============================================================================
 def _state_class(label: str) -> str:
     L = (label or "").upper().strip()
     L = " ".join(L.split())
@@ -1654,11 +1608,6 @@ def update_dials(_):
                 html.Span(
                     f"NIFTY OI PCR {pcr:.2f} • PE {pe_txt} • CE {ce_txt}",
                     className="dial-meta",
-                    title=(
-                        f"PE OI {float(pe_oi):,.0f} / CE OI {float(ce_oi):,.0f}"
-                        if (pe_oi is not None and ce_oi is not None)
-                        else None
-                    ),
                 ),
             ],
             className="dial-sub-inner",
