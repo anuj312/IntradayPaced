@@ -88,107 +88,139 @@ kite.set_access_token(ACCESS_TOKEN)
 # SECTORS / SYMBOLS
 # =============================================================================
 SECTOR_DEFINITIONS = {
+
+    # -------- Existing Sectors (unchanged) --------
+
     "METAL": [
-        "ADANIENT", "HINDALCO", "JSWSTEEL", "HINDZINC", "APLAPOLLO",
-        "TATASTEEL", "JINDALSTEL", "VEDL", "SAIL", "NATIONALUM", "NMDC"
+        "ADANIENT", "APLAPOLLO", "BHARATFORG", "COALINDIA",
+        "HINDALCO", "HINDZINC", "JSWSTEEL",
+        "JINDALSTEL", "NMDC", "NATIONALUM",
+        "SAIL", "TATASTEEL", "VEDL"
     ],
-    "PSUS": [
-        "BANKINDIA", "PNB", "INDIANB", "SBIN",
-        "UNIONBANK", "BANKBARODA", "CANBK"
-    ],
+
     "REALTY": [
         "PHOENIXLTD", "GODREJPROP", "LODHA",
-        "OBEROIRLTY", "DLF", "PRESTIGE", "NBCC"
+        "OBEROIRLTY", "DLF", "PRESTIGE",
+        "NBCC", "RVNL", "HUDCO"
     ],
+
     "ENERGY": [
-        "CGPOWER", "RELIANCE", "GMRAIRPORT", "JSWENERGY", "ONGC",
-        "POWERGRID", "BLUESTARCO", "COALINDIA", "SUZLON", "IREDA",
-        "IOC", "TATAPOWER", "INOXWIND", "MAZDOCK", "PETRONET",
-        "SOLARINDS", "PREMIERENE", "ADANIGREEN", "NTPC", "OIL",
-        "BDL", "BPCL", "NHPC", "POWERINDIA", "ADANIENSOL",
-        "TORNTPOWER", "WAAREEENER"
+        "RELIANCE", "ONGC", "IOC", "BPCL", "OIL",
+        "NTPC", "POWERGRID", "POWERINDIA",
+        "TATAPOWER", "TORNTPOWER", "JSWENERGY",
+        "ADANIGREEN", "ADANIENSOL",
+        "NHPC", "IREDA", "SUZLON", "INOXWIND",
+        "WAAREEENER", "PREMIERENE",
+        "PETRONET", "GAIL", "HINDPETRO"
     ],
+
     "AUTO": [
-        "BOSCHLTD", "TIINDIA", "HEROMOTOCO", "M&M", "EICHERMOT",
-        "EXIDEIND", "BAJAJ-AUTO", "ASHOKLEY", "MARUTI",
-        "TVSMOTOR", "MOTHERSON", "SONACOMS", "UNOMINDA",
-        "TMPV", "BHARATFORG", "AMBER", "PGEL"
+        "BOSCHLTD", "TIINDIA", "HEROMOTOCO",
+        "M&M", "EICHERMOT", "EXIDEIND",
+        "BAJAJ-AUTO", "ASHOKLEY",
+        "MARUTI", "TVSMOTOR",
+        "MOTHERSON", "SONACOMS",
+        "UNOMINDA", "TATAMOTORS",
+        "AMBER"
     ],
+
     "IT": [
-        "KAYNES", "TATATECH", "LTIM", "MPHASIS",
-        "TCS", "CAMS", "OFSS", "TECHM",
-        "TATAELXSI", "HCLTECH", "WIPRO",
-        "KPITTECH", "COFORGE", "PERSISTENT", "INFY"
+        "INFY", "TCS", "HCLTECH", "WIPRO",
+        "TECHM", "LTIM", "MPHASIS",
+        "KPITTECH", "COFORGE", "PERSISTENT",
+        "TATAELXSI", "OFSS", "CAMS",
+        "TATATECH", "NAUKRI", "KAYNES"
     ],
+
     "PHARMA": [
-        "CIPLA", "ALKEM", "BIOCON", "DRREDDY", "MANKIND",
-        "TORNTPHARM", "ZYDUSLIFE", "DIVISLAB", "LUPIN",
-        "PPLPHARMA", "LAURUSLABS", "FORTIS",
-        "AUROPHARMA", "GLENMARK", "SUNPHARMA"
+        "CIPLA", "ALKEM", "BIOCON", "DRREDDY",
+        "MANKIND", "TORNTPHARM", "ZYDUSLIFE",
+        "DIVISLAB", "LUPIN", "PPLPHARMA",
+        "LAURUSLABS", "FORTIS",
+        "AUROPHARMA", "GLENMARK",
+        "SUNPHARMA", "SYNGENE",
+        "MAXHEALTH", "APOLLOHOSP"
     ],
+
     "FMCG": [
-        "ETERNAL", "MARICO", "NYKAA", "NESTLEIND", "VBL",
-        "COLPAL", "HINDUNILVR", "PATANJALI", "DMART",
-        "DABUR", "GODREJCP", "BRITANNIA", "UNITDSPR",
-        "ITC", "TATACONSUM", "KALYANKJIL",
-        "SUPREMEIND", "SWIGGY"
+        "HINDUNILVR", "ITC", "NESTLEIND",
+        "BRITANNIA", "DABUR", "MARICO",
+        "COLPAL", "GODREJCP",
+        "TATACONSUM", "PATANJALI",
+        "UNITDSPR",
+        "VBL", "DMART", "NYKAA",
+        "ETERNAL", "SWIGGY",
+        "TITAN", "TRENT",
+        "KALYANKJIL", "JUBLFOOD",
+        "ASIANPAINT"
     ],
+
     "CEMENT": [
-        "SHREECEM", "DALBHARAT", "AMBUJACEM", "ULTRACEMCO"
+        "ULTRACEMCO", "SHREECEM",
+        "AMBUJACEM", "DALBHARAT",
+        "GRASIM", "ASTRAL",
+        "PIDILITIND", "SUPREMEIND"
     ],
+
     "FINSERVICE": [
-        "PNBHOUSING", "BAJAJFINSV", "ICICIPRULI", "NUVAMA",
-        "HDFCLIFE", "SAMMAANCAP", "ANGELONE", "RECLTD",
-        "BAJFINANCE", "BSE", "MAXHEALTH", "ICICIGI",
-        "HUDCO", "CHOLAFIN", "PFC", "HDFCAMC",
-        "MUTHOOTFIN", "PAYTM", "JIOFIN", "SHRIRAMFIN",
-        "SBICARD", "POLICYBZR", "SBILIFE",
-        "LICHSGFIN", "LICI", "MANAPPURAM",
-        "IRFC", "CDSL",
-        "360ONE", "KFINTECH", "BAJAJHLDNG",
-        "SBIN", "AXISBANK", "KOTAKBANK",
-        "ICICIBANK", "IIFL"
+        "BAJFINANCE", "BAJAJFINSV", "BAJAJHLDNG",
+        "ICICIPRULI", "ICICIGI", "SBILIFE",
+        "HDFCLIFE", "LICI", "LICHSGFIN",
+        "PNBHOUSING", "MUTHOOTFIN",
+        "MANAPPURAM", "CHOLAFIN",
+        "PFC", "RECLTD",
+        "HDFCAMC", "360ONE",
+        "KFINTECH", "NUVAMA",
+        "PAYTM", "POLICYBZR",
+        "IIFL", "SBICARD",
+        "JIOFIN", "SHRIRAMFIN",
+        "SAMMAANCAP", "ANGELONE",
+        "BSE", "CDSL", "MCX", "IRFC"
     ],
+
     "BANK": [
-        "IDFCFIRSTB", "FEDERALBNK", "INDUSINDBK", "HDFCBANK",
-        "SBIN", "KOTAKBANK", "AUBANK", "CANBK",
-        "BANDHANBNK", "RBLBANK", "ICICIBANK",
-        "AXISBANK", "BANKBARODA", "INDIANB"
+        "HDFCBANK", "ICICIBANK", "AXISBANK",
+        "KOTAKBANK", "IDFCFIRSTB",
+        "FEDERALBNK", "INDUSINDBK",
+        "AUBANK", "BANDHANBNK",
+        "RBLBANK", "BANKINDIA", "PNB", "INDIANB",
+        "SBIN", "UNIONBANK", "BANKBARODA", "CANBK"
     ],
-    "NIFTY_50": [
-        "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT",
-        "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV",
-        "BEL", "BHARTIARTL", "CIPLA", "COALINDIA", "DRREDDY",
-        "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK",
-        "HDFCLIFE", "HINDALCO", "HINDUNILVR", "ICICIBANK",
-        "INFY", "INDIGO", "ITC", "JIOFIN", "JSWSTEEL",
-        "KOTAKBANK", "LT", "M&M", "MARUTI", "MAXHEALTH",
-        "NESTLEIND", "NTPC", "ONGC", "POWERGRID", "RELIANCE",
-        "SBILIFE", "SHRIRAMFIN", "SBIN", "SUNPHARMA",
-        "TCS", "TATACONSUM", "TATASTEEL", "TECHM",
-        "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
-        "TATAMOTORS", "ETERNAL"
+
+    "TELECOM": [
+        "BHARTIARTL", "INDUSTOWER",
+        "HAVELLS", "KEI", "POLYCAB",
+        "CROMPTON", "VOLTAS",
+        "PGEL", "DIXON"
     ],
-    "MIDCAP": [
-        "RVNL", "MPHASIS", "HINDPETRO", "PAGEIND", "POLYCAB",
-        "LUPIN", "IDFCFIRSTB", "CONCOR", "CUMMINSIND",
-        "VOLTAS", "BHARATFORG", "FEDERALBNK", "INDHOTEL",
-        "COFORGE", "ASHOKLEY", "PERSISTENT", "UPL",
-        "GODREJPROP", "AUROPHARMA", "AUBANK",
-        "ASTRAL", "HDFCAMC", "JUBLFOOD", "PIIND"
+
+    "LOGISTICS": [
+        "CONCOR", "DELHIVERY", "INDIGO",
+        "INDHOTEL", "IRCTC",
+        "BLUESTARCO", "GMRAIRPORT",
+        "PAGEIND"
     ],
-    "OTHERS": [
-        "MFSL",
-        "ABCAPITAL",
-        "KEI",
-        "HAVELLS",
-        "NAUKRI",
-        "INDUSTOWER",
-        "SIEMENS",
-        "ABB",
-        "GAIL",
-        "IRCTC"
+
+    "DEFENCE": [
+        "ABB", "BDL", "BEL", "BHEL",
+        "CGPOWER", "CUMMINSIND",
+        "HAL", "LT", "MAZDOCK",
+        "SIEMENS", "SOLARINDS"
     ],
+
+    # -------- NEW SECTOR ADDED --------
+
+   "NIFTY_50": [
+    "ADANIENT", "APOLLOHOSP", "ASIANPAINT", "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE",
+    "BAJAJFINSV", "BEL", "BHARTIARTL", "BPCL", "CIPLA", "COALINDIA",
+    "DRREDDY", "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE",
+    "HINDALCO", "HINDUNILVR", "ICICIBANK", "INFY", "INDIGO", "ITC",
+    "JIOFIN", "JSWSTEEL", "KOTAKBANK", "LT", "M&M", "MARUTI",
+    "MAXHEALTH", "NESTLEIND", "NTPC", "ONGC", "POWERGRID", "RELIANCE",
+    "SBILIFE", "SHRIRAMFIN", "SBIN", "SUNPHARMA", "TCS", "TATACONSUM",
+    "TATASTEEL", "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
+    "TATAMOTORS", "ETERNAL"
+]
 }
 
 ALL_SYMBOLS = sorted(set(sum(SECTOR_DEFINITIONS.values(), [])))
