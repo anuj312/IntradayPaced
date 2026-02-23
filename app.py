@@ -1,6 +1,8 @@
 # app.py  (NO AUTH • NO FIREBASE • NO SUBSCRIPTIONS)
 #
 # Dashboard:     http://127.0.0.1:8000/dash/
+# Volm:          http://127.0.0.1:8000/dash/volm
+# FNO Movers:    http://127.0.0.1:8000/dash/fnomovers
 # OpenInterest:  http://127.0.0.1:8000/openinterest
 # (also inside dash: http://127.0.0.1:8000/dash/openinterest)
 #
@@ -198,7 +200,7 @@ SECTOR_DEFINITIONS = {
         "CONCOR", "DELHIVERY", "INDIGO",
         "INDHOTEL", "IRCTC",
         "BLUESTARCO", "GMRAIRPORT",
-        "PAGEIND"
+        "PAGEIND", "UPL"
     ],
 
     "DEFENCE": [
@@ -210,17 +212,17 @@ SECTOR_DEFINITIONS = {
 
     # -------- NEW SECTOR ADDED --------
 
-   "NIFTY_50": [
-    "ADANIENT", "APOLLOHOSP", "ASIANPAINT", "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE",
-    "BAJAJFINSV", "BEL", "BHARTIARTL", "BPCL", "CIPLA", "COALINDIA",
-    "DRREDDY", "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE",
-    "HINDALCO", "HINDUNILVR", "ICICIBANK", "INFY", "INDIGO", "ITC",
-    "JIOFIN", "JSWSTEEL", "KOTAKBANK", "LT", "M&M", "MARUTI",
-    "MAXHEALTH", "NESTLEIND", "NTPC", "ONGC", "POWERGRID", "RELIANCE",
-    "SBILIFE", "SHRIRAMFIN", "SBIN", "SUNPHARMA", "TCS", "TATACONSUM",
-    "TATASTEEL", "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
-    "TATAMOTORS", "ETERNAL"
-]
+    "NIFTY_50": [
+        "ADANIENT", "APOLLOHOSP", "ASIANPAINT", "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE",
+        "BAJAJFINSV", "BEL", "BHARTIARTL", "BPCL", "CIPLA", "COALINDIA",
+        "DRREDDY", "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE",
+        "HINDALCO", "HINDUNILVR", "ICICIBANK", "INFY", "INDIGO", "ITC",
+        "JIOFIN", "JSWSTEEL", "KOTAKBANK", "LT", "M&M", "MARUTI",
+        "MAXHEALTH", "NESTLEIND", "NTPC", "ONGC", "POWERGRID", "RELIANCE",
+        "SBILIFE", "SHRIRAMFIN", "SBIN", "SUNPHARMA", "TCS", "TATACONSUM",
+        "TATASTEEL", "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
+        "TATAMOTORS", "ETERNAL"
+    ]
 }
 
 ALL_SYMBOLS = sorted(set(sum(SECTOR_DEFINITIONS.values(), [])))
@@ -1062,6 +1064,7 @@ dash_app = dash.Dash(
 )
 server = dash_app.server
 
+# Volm plugin
 web.register_volm(
     dash_app,
     BASE=BASE,
@@ -1071,6 +1074,16 @@ web.register_volm(
         "symbol_to_token": symbol_to_token,
         "DAILY_STATS": DAILY_STATS,
         "get_live_or_eod_state": get_live_or_eod_state,
+        "IST": IST,
+    },
+)
+
+# FNO Movers plugin (new; moved from optioninterest.py into Dash)
+web.register_fno_movers(
+    dash_app,
+    BASE=BASE,
+    ctx={
+        "ALL_SYMBOLS": ALL_SYMBOLS,
         "IST": IST,
     },
 )
@@ -1400,12 +1413,19 @@ dash_app.layout = dbc.Container(
 def route(pathname):
     pn = (pathname or "").strip() or "/"
 
+    # Home / sectors overview
     if pn in ("/", "/dash", "/dash/", BASE):
         return sectors_page()
 
+    # Volm plugin page
     if pn in (f"{BASE}volm", f"{BASE}volm/"):
         return web.volm_page(BASE)
 
+    # F&O Movers (FUT) plugin page (new)
+    if pn in (f"{BASE}fnomovers", f"{BASE}fnomovers/"):
+        return web.fno_movers_page(BASE)
+
+    # OpenInterest standalone FastAPI app inside Dash via iframe
     if pn in (f"{BASE}openinterest", f"{BASE}openinterest/"):
         return html.Iframe(
             src="/openinterest",
@@ -1417,10 +1437,12 @@ def route(pathname):
             },
         )
 
+    # Sector detail page
     if pn.startswith(f"{BASE}sector/"):
         sector = unquote(pn.split(f"{BASE}sector/")[1]).upper()
         return sector_page(sector) if sector in SECTOR_DEFINITIONS else dbc.Alert("Sector not found", color="danger")
 
+    # Fallback
     return sectors_page()
 
 
@@ -1480,6 +1502,9 @@ def update_top_stats(_):
         dbc.Badge("Offline" if offline else "Live", color=("danger" if offline else "success"), className="stat-badge"),
 
         html.A("Volm", href=f"{BASE}volm", target="_blank", className="stat-chip",
+               style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"}),
+
+        html.A("FNO Movers", href=f"{BASE}fnomovers", target="_blank", className="stat-chip",
                style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"}),
 
         html.A("OpenInterest", href=f"{BASE}openinterest", target="_blank", className="stat-chip",
