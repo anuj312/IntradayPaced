@@ -30,6 +30,8 @@ from dash.exceptions import PreventUpdate
 
 from kiteconnect import KiteConnect
 
+import fnoseed  # ✅ single source of truth for prev-day OI seeding (started by app.py)
+
 
 # =============================================================================
 # VOLM (Cash) — ORIGINAL LOGIC (unchanged)
@@ -163,10 +165,6 @@ def _compute_volm_df(ctx: Dict[str, Any]) -> pd.DataFrame:
 
 
 def _volm_tables(ctx: Dict[str, Any]) -> Tuple[list, list, list, list, float, float]:
-    """
-    Old Volm tables (unchanged):
-      breakout_rows, breakdown_rows, buy_rvol_rows, sell_rvol_rows, shock_th, extreme_th
-    """
     df = _compute_volm_df(ctx)
     if df.empty:
         return [], [], [], [], 2.0, 3.0
@@ -228,17 +226,16 @@ def _volm_tables(ctx: Dict[str, Any]) -> Tuple[list, list, list, list, float, fl
 
 
 # =============================================================================
-# FNO (FUT) — Instruments + Prev-OI seeding + FUT RVOLm20 helpers
+# FNO REST (quotes + FUT avg20 volume) — prev-OI seed is read from fnoseed
 # =============================================================================
 
 FNO_MOVERS_TTL_SEC = float(os.getenv("FNO_MOVERS_TTL_SEC", "6"))
-FNO_PREV_OI_PACE_SEC = float(os.getenv("FNO_PREV_OI_PACE_SEC", "0.35"))
 FNO_QUOTE_CHUNK = int(os.getenv("FNO_QUOTE_CHUNK", "350"))
 
 _KITE_API_KEY = os.getenv("KITE_API_KEY", "").strip()
 _KITE_ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN", "").strip()
 if not _KITE_API_KEY or not _KITE_ACCESS_TOKEN:
-    raise RuntimeError("Missing KITE_API_KEY / KITE_ACCESS_TOKEN env vars (required for FNO logic).")
+    raise RuntimeError("Missing KITE_API_KEY / KITE_ACCESS_TOKEN env vars.")
 
 kite_fno = KiteConnect(api_key=_KITE_API_KEY)
 kite_fno.set_access_token(_KITE_ACCESS_TOKEN)
@@ -246,13 +243,18 @@ kite_fno.set_access_token(_KITE_ACCESS_TOKEN)
 REST_LOCK = threading.Lock()
 FNO_LOCK = threading.RLock()
 
+# FUT universe cache for quotes/mapping (separate from fnoseed cache; safe)
 FNO_FUT_DF: Optional[pd.DataFrame] = None
-PREV_OI_BY_EXPIRY: Dict[str, Dict[int, int]] = {}
-PREV_OI_PROGRESS: Dict[str, Dict[str, Any]] = {}
+
+# FNO movers payload cache (REST TTL)
 MOVERS_CACHE: Dict[str, Tuple[dict, float]] = {}
 
 # FUT avg 20D volume cache (token -> (avg20, expires_epoch))
 FUT_AVGVOL20_CACHE: Dict[int, Tuple[Optional[float], float]] = {}
+
+# Near-month quote cache (expiry string -> (quotes dict, expiry epoch))
+FUT_NEAR_QUOTE_CACHE: Dict[str, Tuple[dict, float]] = {}
+FUT_NEAR_QUOTE_TTL_SEC = float(os.getenv("FUT_NEAR_QUOTE_TTL_SEC", "6"))
 
 
 def _chunk_list(xs: List[str], n: int):
@@ -275,11 +277,7 @@ def _cache_expiry_eod_ist(ist) -> float:
 
 
 def fut_avg_vol_20d(token: int, ist) -> Optional[float]:
-    """
-    Avg daily volume of last 20 completed sessions for this FUT token.
-    Drops today's candle if present. Requires at least 5 sessions.
-    Cached until end of day IST.
-    """
+    """Avg daily volume of last 20 completed sessions for this FUT token (min 5 sessions)."""
     now = time.time()
     cached = FUT_AVGVOL20_CACHE.get(int(token))
     if cached and cached[1] > now:
@@ -306,14 +304,12 @@ def fut_avg_vol_20d(token: int, ist) -> Optional[float]:
         else:
             df["date"] = pd.to_datetime(df["date"])
             df["d"] = df["date"].dt.date
-
             today = datetime.now(ist).date()
             if len(df) and df.iloc[-1]["d"] == today:
                 df = df.iloc[:-1].copy()
 
             vols = pd.to_numeric(df["volume"], errors="coerce").dropna().tail(20)
             avg20 = float(vols.mean()) if len(vols) >= 5 else None
-
     except Exception:
         avg20 = None
 
@@ -322,8 +318,19 @@ def fut_avg_vol_20d(token: int, ist) -> Optional[float]:
 
 
 def _load_fno_futures_once(ctx: Dict[str, Any]) -> pd.DataFrame:
-    """Load NFO FUT instruments filtered to allowed (ctx['ALL_SYMBOLS']). Cached."""
+    """
+    Load NFO FUT instruments filtered to allowed underlyings.
+    Prefer fnoseed.FNO_FUT_DF if already loaded by app.py, else load here.
+    """
     global FNO_FUT_DF
+
+    # Prefer fnoseed's cached df (loaded in app.py)
+    with fnoseed.state_lock:
+        df_seed = fnoseed.FNO_FUT_DF
+        if df_seed is not None and not df_seed.empty:
+            return df_seed
+
+    # Fallback to local cache
     with FNO_LOCK:
         if FNO_FUT_DF is not None and not FNO_FUT_DF.empty:
             return FNO_FUT_DF
@@ -353,98 +360,15 @@ def _near_expiry_from_df(df: pd.DataFrame, ist) -> Optional[date]:
     return exps[0] if exps else None
 
 
-def _fetch_prevday_oi(token: int, ist) -> Optional[int]:
-    end_date = datetime.now(ist).date()
-    frm = end_date - timedelta(days=12)
-    to = end_date - timedelta(days=1)
-
-    with REST_LOCK:
-        candles = kite_fno.historical_data(
-            instrument_token=int(token),
-            from_date=frm,
-            to_date=to,
-            interval="day",
-            oi=True,
-        )
-    if not candles:
-        return None
-    oi = candles[-1].get("oi")
-    return int(oi) if oi is not None else None
-
-
-def _ensure_prev_oi_seed(ctx: Dict[str, Any], expiry_: date):
-    """Seed prev-day OI for near-month FUT tokens (paced)."""
-    expiry_s = str(expiry_)
-    df = _load_fno_futures_once(ctx)
-    tokens = [int(x) for x in df[df["expiry"] == expiry_]["instrument_token"].tolist()]
-    if not tokens:
-        return
-
-    with FNO_LOCK:
-        prog = PREV_OI_PROGRESS.get(expiry_s) or {}
-        if prog.get("running"):
-            return
-        if prog.get("done") and prog.get("total") and int(prog["done"]) >= int(prog["total"]):
-            return
-
-        PREV_OI_PROGRESS[expiry_s] = {
-            "running": True,
-            "done": 0,
-            "total": len(tokens),
-            "errors": 0,
-            "updated_at": datetime.now(ctx["IST"]).isoformat(),
-        }
-
-    def _run():
-        cache: Dict[int, int] = {}
-        done = 0
-        err = 0
-        for tok in tokens:
-            try:
-                oi_prev = _fetch_prevday_oi(tok, ctx["IST"])
-                if oi_prev is not None:
-                    cache[int(tok)] = int(oi_prev)
-            except Exception:
-                err += 1
-
-            done += 1
-            with FNO_LOCK:
-                PREV_OI_PROGRESS[expiry_s]["done"] = done
-                PREV_OI_PROGRESS[expiry_s]["errors"] = err
-                PREV_OI_PROGRESS[expiry_s]["updated_at"] = datetime.now(ctx["IST"]).isoformat()
-
-            time.sleep(FNO_PREV_OI_PACE_SEC)
-
-        with FNO_LOCK:
-            PREV_OI_BY_EXPIRY[expiry_s] = cache
-            PREV_OI_PROGRESS[expiry_s]["running"] = False
-            PREV_OI_PROGRESS[expiry_s]["updated_at"] = datetime.now(ctx["IST"]).isoformat()
-
-    threading.Thread(target=_run, daemon=True).start()
-
-
 # =============================================================================
-# VOLM PAGE — FUT-based Momentum + OI%
-#   Momentum = FUT volume today / avg20 FUT daily volume   (UNPACED)
-#   OI% = FUT OI% (today vs prev-day)
-#   %Change = CASH % from open (kept)
+# VOLM PAGE — FUT-based Momentum + OI% (reads prev-oi from fnoseed)
 # =============================================================================
-
-FUT_NEAR_QUOTE_CACHE: Dict[str, Tuple[dict, float]] = {}  # expiry_str -> (quotes, expires_epoch)
-FUT_NEAR_QUOTE_TTL_SEC = float(os.getenv("FUT_NEAR_QUOTE_TTL_SEC", "6"))
-
 
 def _compute_rvol20_unpaced_df(ctx: Dict[str, Any]) -> pd.DataFrame:
     """
-    FUT-based momentum for Volm page (unpaced):
-
-      Momentum(20D) = FUT volume today / avg20 FUT daily volume
-
-    Uses near-month FUT.
-    Keeps %Change from CASH open -> CASH LTP for the same symbol.
-
-    Returns columns:
-      Symbol, %Change, Momentum, OI%
+    Momentum(20D) = near-month FUT volume(today) / avg20 FUT daily volume
+    OI% = near-month FUT OI% vs prev-day OI (from fnoseed)
+    %Change = CASH % from open (kept)
     """
     IST = ctx["IST"]
     ALL_SYMBOLS = ctx["ALL_SYMBOLS"]
@@ -453,7 +377,7 @@ def _compute_rvol20_unpaced_df(ctx: Dict[str, Any]) -> pd.DataFrame:
     LOCK = ctx["LOCK"]
 
     futdf = _load_fno_futures_once(ctx)
-    near = _near_expiry_from_df(futdf, IST) if futdf is not None else None
+    near = _near_expiry_from_df(futdf, IST)
     if not near:
         return pd.DataFrame()
 
@@ -461,14 +385,11 @@ def _compute_rvol20_unpaced_df(ctx: Dict[str, Any]) -> pd.DataFrame:
     if dfe.empty:
         return pd.DataFrame()
 
-    # Start/continue prev-OI seed so OI% can appear
-    _ensure_prev_oi_seed(ctx, near)
     expiry_s = str(near)
+    with fnoseed.state_lock:
+        prev_oi_map = dict(fnoseed.PREV_OI_BY_EXPIRY.get(expiry_s) or {})
 
-    with FNO_LOCK:
-        prev_oi_map = dict(PREV_OI_BY_EXPIRY.get(expiry_s) or {})
-
-    # Cached near-month quotes
+    # cached near-month quotes
     now = time.time()
     cached = FUT_NEAR_QUOTE_CACHE.get(expiry_s)
     if cached and cached[1] > now:
@@ -542,11 +463,6 @@ def _compute_rvol20_unpaced_df(ctx: Dict[str, Any]) -> pd.DataFrame:
 
 
 def _rvol20_momentum_tables(ctx: Dict[str, Any], top_n: int = 15) -> Tuple[list, list]:
-    """
-    Volm page Momentum tables (FUT volume based):
-      - Gainers: %Change > 0, sorted by Momentum desc
-      - Losers:  %Change < 0, sorted by Momentum desc
-    """
     df = _compute_rvol20_unpaced_df(ctx)
     if df.empty:
         return [], []
@@ -557,18 +473,8 @@ def _rvol20_momentum_tables(ctx: Dict[str, Any], top_n: int = 15) -> Tuple[list,
     if df.empty:
         return [], []
 
-    gainers = (
-        df[df["%Change"] > 0]
-        .sort_values("Momentum", ascending=False)
-        .head(int(top_n))
-        .copy()
-    )
-    losers = (
-        df[df["%Change"] < 0]
-        .sort_values("Momentum", ascending=False)
-        .head(int(top_n))
-        .copy()
-    )
+    gainers = df[df["%Change"] > 0].sort_values("Momentum", ascending=False).head(int(top_n)).copy()
+    losers = df[df["%Change"] < 0].sort_values("Momentum", ascending=False).head(int(top_n)).copy()
 
     gainers["Momentum"] = gainers["Momentum"].astype(float).round(2)
     losers["Momentum"] = losers["Momentum"].astype(float).round(2)
@@ -587,55 +493,21 @@ def _rvol20_momentum_tables(ctx: Dict[str, Any], top_n: int = 15) -> Tuple[list,
 # =============================================================================
 
 def volm_page(BASE: str):
-    # Existing Volm tables (unchanged)
     cols = [
-        {
-            "colId": "stock",
-            "field": "Symbol",
-            "headerName": "STOCK",
-            "cellRenderer": "SymbolCell",
-            "flex": 1,
-            "minWidth": 160,
-            "headerClass": "h-left",
-            "cellClass": "c-left",
-        },
-        {
-            "colId": "pct",
-            "field": "%Change",
-            "headerName": "%CHG",
-            "cellRenderer": "PctPill",
-            "minWidth": 130,
-            "maxWidth": 150,
-            "suppressSizeToFit": True,
-            "headerClass": "ag-right-aligned-header h-right",
-            "cellClass": "ag-right-aligned-cell cell-num c-right",
-        },
-        {
-            "colId": "rvol",
-            "field": "RVOL",
-            "headerName": "RVOL",
-            "cellRenderer": "RfactorPill",
-            "minWidth": 120,
-            "maxWidth": 150,
-            "suppressSizeToFit": True,
-            "headerClass": "ag-right-aligned-header h-right",
-            "cellClass": "ag-right-aligned-cell cell-num c-right",
-            "valueFormatter": {"function": "fmt2(params.value)"},
-        },
-        {
-            "colId": "vol",
-            "field": "Vol",
-            "headerName": "VOLUME",
-            "cellRenderer": "VolPill",
-            "minWidth": 140,
-            "maxWidth": 180,
-            "suppressSizeToFit": True,
-            "headerClass": "ag-right-aligned-header h-right",
-            "cellClass": "ag-right-aligned-cell cell-num c-right",
-        },
+        {"colId": "stock", "field": "Symbol", "headerName": "STOCK", "cellRenderer": "SymbolCell",
+         "flex": 1, "minWidth": 160, "headerClass": "h-left", "cellClass": "c-left"},
+        {"colId": "pct", "field": "%Change", "headerName": "%CHG", "cellRenderer": "PctPill",
+         "minWidth": 130, "maxWidth": 150, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right"},
+        {"colId": "rvol", "field": "RVOL", "headerName": "RVOL", "cellRenderer": "RfactorPill",
+         "minWidth": 120, "maxWidth": 150, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right",
+         "valueFormatter": {"function": "fmt2(params.value)"}},
+        {"colId": "vol", "field": "Vol", "headerName": "VOLUME", "cellRenderer": "VolPill",
+         "minWidth": 140, "maxWidth": 180, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right"},
     ]
 
-    # FUT-based Momentum tables: Symbol | %Change | Momentum | OI%
     pct_fmt = {
         "function": (
             "params.value==null ? '—' : "
@@ -652,54 +524,20 @@ def volm_page(BASE: str):
     }
 
     mom_cols = [
-        {
-            "colId": "stock",
-            "field": "Symbol",
-            "headerName": "STOCK",
-            "cellRenderer": "SymbolCell",
-            "flex": 1,
-            "minWidth": 160,
-            "headerClass": "h-left",
-            "cellClass": "c-left",
-        },
-        {
-            "colId": "pct",
-            "field": "%Change",
-            "headerName": "%CHG",
-            "cellRenderer": "PctPill",
-            "minWidth": 130,
-            "maxWidth": 150,
-            "suppressSizeToFit": True,
-            "headerClass": "ag-right-aligned-header h-right",
-            "cellClass": "ag-right-aligned-cell cell-num c-right",
-        },
-        {
-            "colId": "mom",
-            "field": "Momentum",
-            "headerName": "MOMENTUM (FUT 20D)",
-            "type": "rightAligned",
-            "minWidth": 185,
-            "maxWidth": 205,
-            "suppressSizeToFit": True,
-            "headerClass": "ag-right-aligned-header h-right",
-            "cellClass": "ag-right-aligned-cell cell-num c-right",
-            "valueFormatter": {"function": "params.value==null ? '—' : (Number(params.value).toFixed(2) + 'x')"},
-            # white + bold (no green)
-            "cellStyle": {"function": "params.value==null ? {} : ({color:'rgba(255,255,255,0.92)', fontWeight:'800'})"},
-        },
-        {
-            "colId": "oi",
-            "field": "OI%",
-            "headerName": "OI%",
-            "type": "rightAligned",
-            "minWidth": 110,
-            "maxWidth": 125,
-            "suppressSizeToFit": True,
-            "headerClass": "ag-right-aligned-header h-right",
-            "cellClass": "ag-right-aligned-cell cell-num c-right",
-            "valueFormatter": pct_fmt,
-            "cellStyle": oi_color,
-        },
+        {"colId": "stock", "field": "Symbol", "headerName": "STOCK", "cellRenderer": "SymbolCell",
+         "flex": 1, "minWidth": 160, "headerClass": "h-left", "cellClass": "c-left"},
+        {"colId": "pct", "field": "%Change", "headerName": "%CHG", "cellRenderer": "PctPill",
+         "minWidth": 130, "maxWidth": 150, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right"},
+        {"colId": "mom", "field": "Momentum", "headerName": "MOMENTUM (FUT 20D)", "type": "rightAligned",
+         "minWidth": 185, "maxWidth": 205, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right",
+         "valueFormatter": {"function": "params.value==null ? '—' : (Number(params.value).toFixed(2) + 'x')"},
+         "cellStyle": {"function": "params.value==null ? {} : ({color:'rgba(255,255,255,0.92)', fontWeight:'800'})"}},
+        {"colId": "oi", "field": "OI%", "headerName": "OI%", "type": "rightAligned",
+         "minWidth": 110, "maxWidth": 125, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right",
+         "valueFormatter": pct_fmt, "cellStyle": oi_color},
     ]
 
     ROW_H = 34
@@ -734,62 +572,36 @@ def volm_page(BASE: str):
             dbc.Row(
                 [
                     dbc.Col(html.H4("Volm (Volume Shockers)", className="page-title"), width=True),
-                    dbc.Col(
-                        dbc.Button("Back", href=f"{BASE}", color="secondary", outline=True, className="btn-back"),
-                        width="auto",
-                    ),
+                    dbc.Col(dbc.Button("Back", href=f"{BASE}", color="secondary", outline=True, className="btn-back"), width="auto"),
                 ],
                 className="align-items-center g-2",
             ),
             html.Div(id="volm-thresholds", className="hint", style={"marginBottom": "10px"}),
 
-            # NEW: FUT-based Momentum + OI%
             dbc.Row(
                 [
-                    dbc.Col(
-                        [
-                            html.H6("RVOL20 Momentum (FUT Unpaced) — Gainers", className="mt-1"),
-                            grid("volm-mom-gainers", mom_cols, height=GRID_10ROWS_HEIGHT),
-                        ],
-                        md=6,
-                    ),
-                    dbc.Col(
-                        [
-                            html.H6("RVOL20 Momentum (FUT Unpaced) — Losers", className="mt-1"),
-                            grid("volm-mom-losers", mom_cols, height=GRID_10ROWS_HEIGHT),
-                        ],
-                        md=6,
-                    ),
+                    dbc.Col([html.H6("RVOL20 Momentum (FUT Unpaced) — Gainers", className="mt-1"),
+                             grid("volm-mom-gainers", mom_cols, height=GRID_10ROWS_HEIGHT)], md=6),
+                    dbc.Col([html.H6("RVOL20 Momentum (FUT Unpaced) — Losers", className="mt-1"),
+                             grid("volm-mom-losers", mom_cols, height=GRID_10ROWS_HEIGHT)], md=6),
                 ],
                 className="g-2",
             ),
 
             html.Hr(),
 
-            # OLD: BUY / SELL RVOL (unchanged)
             dbc.Row(
                 [
-                    dbc.Col(
-                        [
-                            html.H6("Top 15 BUYING RVOL (RVOL high + %CHG ≥ 0)", className="mt-1"),
-                            grid("volm-buy-rvol", cols, height=GRID_10ROWS_HEIGHT),
-                        ],
-                        md=6,
-                    ),
-                    dbc.Col(
-                        [
-                            html.H6("Top 15 SELLING RVOL (RVOL high + %CHG < 0)", className="mt-1"),
-                            grid("volm-sell-rvol", cols, height=GRID_10ROWS_HEIGHT),
-                        ],
-                        md=6,
-                    ),
+                    dbc.Col([html.H6("Top 15 BUYING RVOL (RVOL high + %CHG ≥ 0)", className="mt-1"),
+                             grid("volm-buy-rvol", cols, height=GRID_10ROWS_HEIGHT)], md=6),
+                    dbc.Col([html.H6("Top 15 SELLING RVOL (RVOL high + %CHG < 0)", className="mt-1"),
+                             grid("volm-sell-rvol", cols, height=GRID_10ROWS_HEIGHT)], md=6),
                 ],
                 className="g-2",
             ),
 
             html.Hr(),
 
-            # OLD: BREAKOUT / BREAKDOWN (unchanged)
             dbc.Row(
                 [
                     dbc.Col([html.H6("Breakout Vol Shockers", className="mt-1"), grid("volm-breakout", cols)], md=6),
@@ -818,7 +630,6 @@ def register_volm(dash_app, BASE: str, ctx: Dict[str, Any]) -> None:
         try:
             mom_g, mom_l = _rvol20_momentum_tables(ctx, top_n=15)
             b1, b2, buy15, sell15, th_shock, th_extreme = _volm_tables(ctx)
-
             now_txt = datetime.now(ctx["IST"]).strftime("%H:%M:%S")
             hint = f"[{now_txt}] Thresholds (dynamic): Shock RVOL ≥ {th_shock:.2f} | Extreme RVOL ≥ {th_extreme:.2f}"
             return mom_g, mom_l, b1, b2, buy15, sell15, hint
@@ -827,7 +638,7 @@ def register_volm(dash_app, BASE: str, ctx: Dict[str, Any]) -> None:
 
 
 # =============================================================================
-# FNO MOVERS PAGE (existing)
+# FNO MOVERS PAGE (reads fnoseed progress)
 # =============================================================================
 
 def fno_movers_page(BASE: str):
@@ -858,7 +669,6 @@ def fno_movers_page(BASE: str):
         {"field": "OI%", "headerName": "OI%", "type": "rightAligned", "minWidth": 100, "valueFormatter": pct_fmt, "cellStyle": signed_color},
     ]
 
-    # Note: FUT_RVOLm20 is computed elsewhere (if you want it visible, add column here too)
     all_coldefs = top_coldefs + [
         {"field": "FUT_RVOLm20", "headerName": "FUT RVOLm20", "type": "rightAligned", "minWidth": 130, "maxWidth": 150,
          "valueFormatter": {"function": "params.value==null ? '—' : (Number(params.value).toFixed(2) + 'x')"},
@@ -898,14 +708,8 @@ def fno_movers_page(BASE: str):
 
             dbc.Row(
                 [
-                    dbc.Col(
-                        html.Div([html.Div("F&O MOVERS", className="fno-title-kicker")], className="fno-title-wrap"),
-                        width=True,
-                    ),
-                    dbc.Col(
-                        dbc.Button("Back", href=f"{BASE}", color="secondary", outline=True, className="btn-back"),
-                        width="auto",
-                    ),
+                    dbc.Col(html.Div([html.Div("F&O MOVERS", className="fno-title-kicker")], className="fno-title-wrap"), width=True),
+                    dbc.Col(dbc.Button("Back", href=f"{BASE}", color="secondary", outline=True, className="btn-back"), width="auto"),
                 ],
                 className="align-items-center g-2",
             ),
@@ -935,20 +739,10 @@ def fno_movers_page(BASE: str):
 
             dbc.Row(
                 [
-                    dbc.Col(
-                        [
-                            html.H6("Top Gainers (30 rows, scroll)", className="mt-1 fno-section-title"),
-                            grid("fno_gainers_grid", top_coldefs, TOP_GRID_HEIGHT),
-                        ],
-                        md=6,
-                    ),
-                    dbc.Col(
-                        [
-                            html.H6("Top Losers (30 rows, scroll)", className="mt-1 fno-section-title"),
-                            grid("fno_losers_grid", top_coldefs, TOP_GRID_HEIGHT),
-                        ],
-                        md=6,
-                    ),
+                    dbc.Col([html.H6("Top Gainers (30 rows, scroll)", className="mt-1 fno-section-title"),
+                             grid("fno_gainers_grid", top_coldefs, TOP_GRID_HEIGHT)], md=6),
+                    dbc.Col([html.H6("Top Losers (30 rows, scroll)", className="mt-1 fno-section-title"),
+                             grid("fno_losers_grid", top_coldefs, TOP_GRID_HEIGHT)], md=6),
                 ],
                 className="g-2",
             ),
@@ -981,7 +775,6 @@ def register_fno_movers(dash_app, BASE: str, ctx: Dict[str, Any]) -> None:
         today = datetime.now(ctx["IST"]).date()
         exps = sorted({e for e in df["expiry"].dropna().tolist() if e >= today})
         opts = [{"label": str(e), "value": str(e)} for e in exps]
-
         val = str(near) if near else (opts[0]["value"] if opts else "")
         return (opts if opts else [{"label": "No expiries", "value": ""}]), val
 
@@ -1022,33 +815,35 @@ def register_fno_movers(dash_app, BASE: str, ctx: Dict[str, Any]) -> None:
         except Exception:
             return [], [], [], "Invalid expiry", "—"
 
-        # Build movers payload (30 rows so top grids show 15 and scroll for rest)
         payload = _compute_fno_movers_payload_internal(ctx, exp, top_n=30)
 
-        # Seed status pill
-        prog = payload.get("prev_oi_progress") or {}
-        running = bool(prog.get("running"))
-        done = int(prog.get("done") or 0)
-        total = int(prog.get("total") or 0)
-        errors = int(prog.get("errors") or 0)
+        # ✅ seed status from fnoseed (single source)
+        with fnoseed.state_lock:
+            prog = dict(fnoseed.PREV_OI_PROGRESS.get(str(exp)) or {})
+            last_err = fnoseed.LAST_ERROR
 
-        if total <= 0:
-            seed_children = html.Span("—")
+        if last_err and not prog:
+            seed_children = html.Span(f"ERR: {str(last_err)[:140]}", style={"color": "var(--bad)", "fontWeight": "800"})
         else:
-            if errors > 0:
-                pill = html.Span(f"ERR {errors}", className="fno-status-pill bad")
-            elif running:
-                pill = html.Span("SEEDING…", className="fno-status-pill warn")
-            else:
-                pill = html.Span("READY", className="fno-status-pill good")
+            running = bool(prog.get("running"))
+            done = int(prog.get("done") or 0)
+            total = int(prog.get("total") or 0)
+            errors = int(prog.get("errors") or 0)
 
-            seed_children = html.Span(
-                [
-                    html.Span(f"{done:,}/{total:,}", className="fno-meta-value"),
-                    pill,
-                ],
-                className="fno-meta-inline",
-            )
+            if total <= 0:
+                seed_children = html.Span("NOT SEEDED", style={"color": "rgba(255,255,255,0.65)", "fontWeight": "800"})
+            else:
+                if errors > 0:
+                    pill = html.Span(f"ERR {errors}", className="fno-status-pill bad")
+                elif running:
+                    pill = html.Span("SEEDING…", className="fno-status-pill warn")
+                else:
+                    pill = html.Span("READY", className="fno-status-pill good")
+
+                seed_children = html.Span(
+                    [html.Span(f"{done:,}/{total:,}", className="fno-meta-value"), pill],
+                    className="fno-meta-inline",
+                )
 
         updated_iso = payload.get("updated_at")
         updated_txt, updated_title = _fmt_updated_ist(updated_iso)
@@ -1063,16 +858,9 @@ def register_fno_movers(dash_app, BASE: str, ctx: Dict[str, Any]) -> None:
         )
 
 
-# =============================================================================
-# Internal FNO movers payload builder (kept at bottom so functions above can call it)
-# =============================================================================
-
 def _compute_fno_movers_payload_internal(ctx: Dict[str, Any], expiry_: date, top_n: int = 30) -> dict:
     """
-    Returns dict:
-      expiry, updated_at, rows, gainers, losers, prev_oi_progress
-    rows contain:
-      Symbol, Contract, Price, %Chg, Contracts, OI%, FUT_RVOLm20, BuildUp
+    Builds movers payload. Uses fnoseed prev OI map (no seeding here).
     """
     cache_key = f"{expiry_}:{int(top_n)}"
     now = time.time()
@@ -1098,18 +886,15 @@ def _compute_fno_movers_payload_internal(ctx: Dict[str, Any], expiry_: date, top
             MOVERS_CACHE[cache_key] = (payload, now + FNO_MOVERS_TTL_SEC)
         return payload
 
-    _ensure_prev_oi_seed(ctx, expiry_)
-
     expiry_s = str(expiry_)
-    with FNO_LOCK:
-        prev_oi_map = dict(PREV_OI_BY_EXPIRY.get(expiry_s) or {})
-        prog = dict(PREV_OI_PROGRESS.get(expiry_s) or {})
+    with fnoseed.state_lock:
+        prev_oi_map = dict(fnoseed.PREV_OI_BY_EXPIRY.get(expiry_s) or {})
+        prog = dict(fnoseed.PREV_OI_PROGRESS.get(expiry_s) or {})
 
     keys = ["NFO:" + s for s in dfe["tradingsymbol"].astype(str).tolist()]
     q = _quote_many(keys, chunk_size=FNO_QUOTE_CHUNK)
 
-    # paced factor for FUT_RVOLm20
-    tf = _time_factor_ist(datetime.now(ctx["IST"]))  # reuse cash TF function; same session times
+    tf = _time_factor_ist(datetime.now(ctx["IST"]))
 
     rows: List[dict] = []
     for _, r in dfe.iterrows():
@@ -1147,7 +932,7 @@ def _compute_fno_movers_payload_internal(ctx: Dict[str, Any], expiry_: date, top
                 oi_prev_i = int(oi_prev)
                 oi_chg = int(oi_now - oi_prev_i)
                 oi_pct = (float(oi_chg) / float(oi_prev_i)) * 100.0
-                # build-up label
+
                 if price_chg > 0 and oi_chg > 0:
                     buildup = "LONG BUILDUP"
                 elif price_chg < 0 and oi_chg > 0:
@@ -1162,7 +947,6 @@ def _compute_fno_movers_payload_internal(ctx: Dict[str, Any], expiry_: date, top
                 oi_pct = None
                 buildup = "NO CLEAR"
 
-        # FUT_RVOLm20 (paced) = FUT volume / (avg20 * tf)
         fut_rvolm20 = None
         try:
             avg20 = fut_avg_vol_20d(fut_token, ctx["IST"])
@@ -1186,7 +970,8 @@ def _compute_fno_movers_payload_internal(ctx: Dict[str, Any], expiry_: date, top
             }
         )
 
-    if not rows:
+    dfr = pd.DataFrame(rows)
+    if dfr.empty:
         payload = {
             "expiry": str(expiry_),
             "updated_at": datetime.now(ctx["IST"]).isoformat(),
@@ -1199,8 +984,6 @@ def _compute_fno_movers_payload_internal(ctx: Dict[str, Any], expiry_: date, top
         with FNO_LOCK:
             MOVERS_CACHE[cache_key] = (payload, now + FNO_MOVERS_TTL_SEC)
         return payload
-
-    dfr = pd.DataFrame(rows)
 
     full_sorted = dfr.sort_values(["Contracts", "%Chg"], ascending=[False, False]).to_dict("records")
     gainers = (

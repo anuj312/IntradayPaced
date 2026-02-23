@@ -33,6 +33,7 @@ import dash
 from dash import dcc, html, Input, Output
 import dash_bootstrap_components as dbc
 import dash_ag_grid as dag
+import fnoseed
 
 from kiteconnect import KiteConnect, KiteTicker
 
@@ -1761,6 +1762,14 @@ async def _startup():
     start_ticker_once()
     load_nfo_instruments_once()
 
+    # ✅ Start prev-day OI seeding ONCE from app.py (web.py will only READ it)
+    fnoseed.start_seed_near_expiry_once(
+        kite=kite,
+        ist=IST,
+        allowed_underlyings=ALL_SYMBOLS,
+        pace_sec=float(os.getenv("FNO_PREV_OI_PACE_SEC", "0.35")),
+    )
+
     # Ensure OpenInterest starts even when mounted
     await openinterest.on_startup()
 
@@ -1778,7 +1787,7 @@ def dash_no_slash():
 @app.get("/health")
 def health():
     with LOCK:
-        return {
+        base = {
             "status": "ok",
             "seed_20d_done": DAILY_SEED_DONE,
             "seed_20d_progress": DAILY_SEED_PROGRESS,
@@ -1791,6 +1800,25 @@ def health():
             "nfo_loaded": bool(NFO_INS_DF is not None),
             "nfo_error": NFO_LOAD_ERR,
         }
+
+    # ✅ FNO prev-OI seed status from fnoseed
+    try:
+        with fnoseed.state_lock:
+            futdf = fnoseed.FNO_FUT_DF
+            fut_loaded = bool(futdf is not None and not futdf.empty)
+            near = fnoseed.near_expiry_from_df(futdf, IST) if fut_loaded else None
+            near_s = str(near) if near else None
+            prog = dict(fnoseed.PREV_OI_PROGRESS.get(near_s) or {}) if near_s else {}
+            base.update({
+                "fno_fut_loaded": fut_loaded,
+                "fno_near_expiry": near_s,
+                "fno_prev_oi_progress": prog,
+                "fno_last_error": getattr(fnoseed, "LAST_ERROR", None),
+            })
+    except Exception as e:
+        base.update({"fno_prev_oi_error": repr(e)})
+
+    return base
 
 
 @app.get("/theme.css")
