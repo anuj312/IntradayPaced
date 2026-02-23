@@ -1756,21 +1756,25 @@ HERE = Path(__file__).resolve().parent
 THEME_PATH = HERE / "assets" / "theme.css"
 
 
+import threading
+import fnoseed
+
 @app.on_event("startup")
 async def _startup():
     seed_daily_stats_once(per_req_sleep=SEED_SLEEP_SEC)
     start_ticker_once()
     load_nfo_instruments_once()
 
-    # ✅ Start prev-day OI seeding ONCE from app.py (web.py will only READ it)
-    fnoseed.start_seed_near_expiry_once(
-        kite=kite,
-        ist=IST,
-        allowed_underlyings=ALL_SYMBOLS,
-        pace_sec=float(os.getenv("FNO_PREV_OI_PACE_SEC", "0.35")),
-    )
+    def _start_fno_seed_later():
+        fnoseed.start_seed_near_expiry_once(
+            kite=kite,
+            ist=IST,
+            allowed_underlyings=ALL_SYMBOLS,
+            pace_sec=float(os.getenv("FNO_PREV_OI_PACE_SEC", "0.35")),
+        )
 
-    # Ensure OpenInterest starts even when mounted
+    threading.Timer(25.0, _start_fno_seed_later).start()
+
     await openinterest.on_startup()
 
 

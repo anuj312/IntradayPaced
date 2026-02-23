@@ -642,6 +642,9 @@ def register_volm(dash_app, BASE: str, ctx: Dict[str, Any]) -> None:
 # =============================================================================
 
 def fno_movers_page(BASE: str):
+    # -----------------------------
+    # Formatters
+    # -----------------------------
     pct_fmt = {
         "function": (
             "params.value==null ? '—' : "
@@ -649,36 +652,94 @@ def fno_movers_page(BASE: str):
         )
     }
     int_fmt = {"function": "params.value==null?'—':Number(params.value).toLocaleString('en-IN')"}
-    signed_color = {
+
+    # -----------------------------
+    # Styles (VALUES bold)
+    # -----------------------------
+    signed_bold = {
         "function": (
             "params.value==null ? {} : "
-            "(Number(params.value)>0 ? {color:'var(--good)'} : "
-            "(Number(params.value)<0 ? {color:'var(--bad)'} : {}))"
+            "(Number(params.value)>0 ? {color:'var(--good)', fontWeight:'800'} : "
+            "(Number(params.value)<0 ? {color:'var(--bad)', fontWeight:'800'} : "
+            "{color:'rgba(255,255,255,0.90)', fontWeight:'600'}))"
         )
     }
+    white_bold = {
+        "function": "params.value==null ? {} : ({color:'rgba(255,255,255,0.92)', fontWeight:'800'})"
+    }
 
+    # -----------------------------
+    # Sizing (15 visible rows; scroll shows remaining)
+    # -----------------------------
     ROW_H = 34
     HDR_H = 34
     TOP_VISIBLE_ROWS = 15
     TOP_GRID_HEIGHT = f"{HDR_H + (TOP_VISIBLE_ROWS * ROW_H) + 6}px"
 
+    # -----------------------------
+    # Columns
+    # -----------------------------
     top_coldefs = [
-        {"field": "Symbol", "headerName": "SYMBOL", "pinned": "left", "minWidth": 170, "flex": 1, "cellRenderer": "SymbolCell"},
-        {"field": "%Chg", "headerName": "%CHANGE", "type": "rightAligned", "minWidth": 120, "valueFormatter": pct_fmt, "cellStyle": signed_color},
-        {"field": "Contracts", "headerName": "CONTRACTS", "type": "rightAligned", "minWidth": 140, "valueFormatter": int_fmt},
-        {"field": "OI%", "headerName": "OI%", "type": "rightAligned", "minWidth": 100, "valueFormatter": pct_fmt, "cellStyle": signed_color},
+        {
+            "field": "Symbol",
+            "headerName": "SYMBOL",
+            "pinned": "left",
+            "minWidth": 170,
+            "flex": 1,
+            "cellRenderer": "SymbolCell",
+        },
+        {
+            "field": "%Chg",
+            "headerName": "%CHANGE",
+            "type": "rightAligned",
+            "minWidth": 120,
+            "valueFormatter": pct_fmt,
+            "cellStyle": signed_bold,   # ✅ bold values + green/red
+        },
+        {
+            "field": "Contracts",
+            "headerName": "CONTRACTS",
+            "type": "rightAligned",
+            "minWidth": 140,
+            "valueFormatter": int_fmt,
+            "cellStyle": white_bold,    # ✅ bold values
+        },
+        {
+            "field": "OI%",
+            "headerName": "OI%",
+            "type": "rightAligned",
+            "minWidth": 100,
+            "valueFormatter": pct_fmt,
+            "cellStyle": signed_bold,   # ✅ bold values + green/red
+        },
     ]
 
+    # All table: reuse top columns + add details
     all_coldefs = top_coldefs + [
-        {"field": "FUT_RVOLm20", "headerName": "FUT RVOLm20", "type": "rightAligned", "minWidth": 130, "maxWidth": 150,
-         "valueFormatter": {"function": "params.value==null ? '—' : (Number(params.value).toFixed(2) + 'x')"},
-         "cellStyle": {"function": "params.value==null ? {} : ({color:'rgba(255,255,255,0.92)', fontWeight:'800'})"}},
+        {
+            "field": "FUT_RVOLm20",
+            "headerName": "FUT RVOLm20",
+            "type": "rightAligned",
+            "minWidth": 130,
+            "maxWidth": 150,
+            "valueFormatter": {"function": "params.value==null ? '—' : (Number(params.value).toFixed(2) + 'x')"},
+            "cellStyle": white_bold,
+        },
         {"field": "BuildUp", "headerName": "BUILD UP", "minWidth": 170, "flex": 1},
         {"field": "Contract", "headerName": "CONTRACT", "minWidth": 190, "flex": 1},
-        {"field": "Price", "headerName": "PRICE", "type": "rightAligned", "minWidth": 110,
-         "valueFormatter": {"function": "params.value==null?'—':Number(params.value).toFixed(2)"}},
+        {
+            "field": "Price",
+            "headerName": "PRICE",
+            "type": "rightAligned",
+            "minWidth": 110,
+            "valueFormatter": {"function": "params.value==null?'—':Number(params.value).toFixed(2)"},
+            "cellStyle": white_bold,
+        },
     ]
 
+    # -----------------------------
+    # Grid options
+    # -----------------------------
     grid_opts = {
         "immutableData": True,
         "getRowId": {"function": "params.data.Contract || params.data.Symbol"},
@@ -701,6 +762,9 @@ def fno_movers_page(BASE: str):
             style={"height": height, "width": "100%"},
         )
 
+    # -----------------------------
+    # Layout
+    # -----------------------------
     return html.Div(
         [
             dcc.Interval(id="refresh_fno_movers", interval=4000, n_intervals=0),
@@ -708,8 +772,17 @@ def fno_movers_page(BASE: str):
 
             dbc.Row(
                 [
-                    dbc.Col(html.Div([html.Div("F&O MOVERS", className="fno-title-kicker")], className="fno-title-wrap"), width=True),
-                    dbc.Col(dbc.Button("Back", href=f"{BASE}", color="secondary", outline=True, className="btn-back"), width="auto"),
+                    dbc.Col(
+                        html.Div(
+                            [html.Div("F&O MOVERS", className="fno-title-kicker")],
+                            className="fno-title-wrap",
+                        ),
+                        width=True,
+                    ),
+                    dbc.Col(
+                        dbc.Button("Back", href=f"{BASE}", color="secondary", outline=True, className="btn-back"),
+                        width="auto",
+                    ),
                 ],
                 className="align-items-center g-2",
             ),
@@ -739,10 +812,20 @@ def fno_movers_page(BASE: str):
 
             dbc.Row(
                 [
-                    dbc.Col([html.H6("Top Gainers (30 rows, scroll)", className="mt-1 fno-section-title"),
-                             grid("fno_gainers_grid", top_coldefs, TOP_GRID_HEIGHT)], md=6),
-                    dbc.Col([html.H6("Top Losers (30 rows, scroll)", className="mt-1 fno-section-title"),
-                             grid("fno_losers_grid", top_coldefs, TOP_GRID_HEIGHT)], md=6),
+                    dbc.Col(
+                        [
+                            html.H6("Top Gainers (30 rows, scroll)", className="mt-1 fno-section-title"),
+                            grid("fno_gainers_grid", top_coldefs, TOP_GRID_HEIGHT),
+                        ],
+                        md=6,
+                    ),
+                    dbc.Col(
+                        [
+                            html.H6("Top Losers (30 rows, scroll)", className="mt-1 fno-section-title"),
+                            grid("fno_losers_grid", top_coldefs, TOP_GRID_HEIGHT),
+                        ],
+                        md=6,
+                    ),
                 ],
                 className="g-2",
             ),
