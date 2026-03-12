@@ -1,20 +1,11 @@
 # app.py  (NO AUTH • NO FIREBASE • NO SUBSCRIPTIONS)
 #
-# Dashboard:     http://127.0.0.1:8000/dash/
-# Volm:          http://127.0.0.1:8000/dash/volm
-# FNO Movers:    http://127.0.0.1:8000/dash/fnomovers
-# OpenInterest:  http://127.0.0.1:8000/openinterest
-# (also inside dash: http://127.0.0.1:8000/dash/openinterest)
-#
-# Required env:
-#   KITE_API_KEY
-#   KITE_ACCESS_TOKEN
-#
-# Run (single worker recommended):
+# Run:
 #   uvicorn app:app --reload --workers 1
 
 import os
 import time
+import math
 import threading
 import logging
 from collections import deque
@@ -73,10 +64,10 @@ HOT_SAMPLE_SEC = 5
 HOT_HISTORY_MAX_SEC = HOT_WINDOW_SEC + 10 * 60
 HOT_LAST_5M_KEY: Optional[str] = None
 
-# Hot Now filters (15m momentum quality)
-HOT_MIN_RET_PCT = float(os.getenv("HOT_MIN_RET_PCT", "0.25"))       # min |15m return| to include
-HOT_MIN_RANGE_PCT = float(os.getenv("HOT_MIN_RANGE_PCT", "0.40"))   # min 15m high-low range % to include
-HOT_CLOSE_POS_TH = float(os.getenv("HOT_CLOSE_POS_TH", "0.60"))     # gainers close_pos>=th, losers close_pos<=1-th
+# Hot Now filters
+HOT_MIN_RET_PCT = float(os.getenv("HOT_MIN_RET_PCT", "0.25"))       # min |spike%| to include
+HOT_MIN_RANGE_PCT = float(os.getenv("HOT_MIN_RANGE_PCT", "0.40"))   # min window range%
+HOT_CLOSE_POS_TH = float(os.getenv("HOT_CLOSE_POS_TH", "0.60"))
 
 HVHR_N = int(os.getenv("HVHR_N", "20"))
 HVHR_RFACTOR_Q = float(os.getenv("HVHR_RFACTOR_Q", "0.85"))
@@ -317,7 +308,6 @@ def update_from_tick(tick: dict):
 
     _hot_history_push(token, time.time(), float(ltp), float(cumvol) if cumvol is not None else None)
     return ts
-
 
 def compute_20d_daily_stats_and_eod(token: int, days_back: int = 220) -> Dict[str, Any]:
     to_dt = datetime.now()
@@ -581,7 +571,6 @@ def _time_factor_ist_for_rvol(now_ist: Optional[datetime] = None) -> float:
     tf = mins_passed / total_mins
     return max(0.01, min(1.0, tf))
 
-
 def compute_rfactor_row_for_token(token: int):
     state_ = get_live_or_eod_state(token)
     if not state_:
@@ -631,18 +620,14 @@ def compute_rfactor_row_for_token(token: int):
     }
 
 
-# =============================================================================
-# HOT NOW (15m) compute
-# =============================================================================
 def _compute_hot_row_for_token(token: int):
     dq = HOT_HISTORY.get(token)
     if not dq or len(dq) < 2:
         return None
 
     now_epoch = float(dq[-1][0])
-    cutoff = now_epoch - float(HOT_WINDOW_SEC)  # now 5m window
+    cutoff = now_epoch - float(HOT_WINDOW_SEC)
 
-    # base tick at/before cutoff
     base = None
     for t, p, v in dq:
         if float(t) <= cutoff:
@@ -658,7 +643,6 @@ def _compute_hot_row_for_token(token: int):
     if base_p is None or float(base_p) <= 0 or last_p is None:
         return None
 
-    # window points from base->now
     win = [(float(t), p, v) for (t, p, v) in dq if float(t) >= base_t]
     prices = [float(p) for _, p, _ in win if p is not None]
     if len(prices) < 2:
@@ -671,23 +655,12 @@ def _compute_hot_row_for_token(token: int):
     base_pf = float(base_p)
     last_pf = float(last_p)
 
-    # close-to-now return (not used for sorting; useful if you want later)
-    ret_close_pct = (last_pf - base_pf) / (base_pf + 1e-9) * 100.0
-
-    # range% within window
     range_pct = (rng / (base_pf + 1e-9)) * 100.0
 
-    # where the last price sits in the window (0=low, 1=high)
-    close_pos = (last_pf - lo) / (rng + 1e-9)
-
-    # ---- SPIKE (what you asked) ----
-    # max excursion from base to high OR base to low (signed)
-    up_spike_pct = (hi - base_pf) / (base_pf + 1e-9) * 100.0           # >= 0
-    down_spike_pct = (lo - base_pf) / (base_pf + 1e-9) * 100.0         # <= 0
-
+    up_spike_pct = (hi - base_pf) / (base_pf + 1e-9) * 100.0
+    down_spike_pct = (lo - base_pf) / (base_pf + 1e-9) * 100.0
     spike_pct = up_spike_pct if abs(up_spike_pct) >= abs(down_spike_pct) else down_spike_pct
 
-    # 5m volume (if available)
     vol_win = None
     if base_v is not None and last_v is not None:
         vol_win = float(last_v) - float(base_v)
@@ -695,16 +668,12 @@ def _compute_hot_row_for_token(token: int):
             vol_win = None
 
     return {
-        "ret_close_pct": float(ret_close_pct),
         "range_pct": float(range_pct),
-        "close_pos": float(close_pos),
-        "spike_pct": float(spike_pct),     # signed spike (from hi/lo excursion)
+        "spike_pct": float(spike_pct),
         "vol_win": vol_win,
     }
 
-# =============================================================================
-# TABLE ROW BUILDERS
-# =============================================================================
+
 def top_gainers_losers_rfactor_rows(n: int = 15):
     rows = []
     for sym in ALL_SYMBOLS:
@@ -774,9 +743,8 @@ def high_vol_high_rfactor_gainers_losers(n: int = HVHR_N, rfactor_quantile: floa
 
 def top_hot_now_rows(n: int = 15):
     rows = []
-
-    min_spike = float(HOT_MIN_RET_PCT)       # reuse your env var as min |SPIKE%|
-    min_rng = float(HOT_MIN_RANGE_PCT)       # min window range%
+    min_spike = float(HOT_MIN_RET_PCT)
+    min_rng = float(HOT_MIN_RANGE_PCT)
 
     for sym in ALL_SYMBOLS:
         tok = symbol_to_token.get(sym)
@@ -787,37 +755,22 @@ def top_hot_now_rows(n: int = 15):
         if not hr:
             continue
 
-        spike = float(hr["spike_pct"])           # signed (up spike +, down spike -)
+        spike = float(hr["spike_pct"])
         range_pct = float(hr["range_pct"])
 
-        # filters (tune HOT_MIN_RET_PCT / HOT_MIN_RANGE_PCT for 5m)
         if abs(spike) < min_spike:
             continue
         if range_pct < min_rng:
             continue
 
-        # Day range % (display only)
-        day_range_pct = None
-        st = get_live_or_eod_state(tok)
-        if st:
-            _, _, ohlc = st
-            try:
-                op = float(ohlc.get("open") or 0.0)
-                hi = float(ohlc.get("high") or 0.0)
-                lo = float(ohlc.get("low") or 0.0)
-                if op > 0 and hi > 0 and lo > 0 and hi >= lo:
-                    day_range_pct = (hi - lo) / op * 100.0
-            except Exception:
-                day_range_pct = None
-
         rows.append(
             {
                 "Symbol": sym,
                 "_spike": spike,
-                "_abs_spike": abs(spike),                  # sorting key
-                "SPIKE%": round(spike, 2),                 # signed spike
-                "RNG5%": round(range_pct, 2),              # window range
-                "DAY RNG%": (round(float(day_range_pct), 2) if day_range_pct is not None else None),
+                "_abs_spike": abs(spike),
+                "SPIKE%": round(spike, 2),
+                "RNG5%": round(range_pct, 2),
+                "DAY RNG%": None,
             }
         )
 
@@ -828,25 +781,26 @@ def top_hot_now_rows(n: int = 15):
     if df.empty:
         return [], []
 
-    # Gainers = biggest UP spikes
     gainers = (
         df[df["_spike"] > 0]
         .sort_values(["_abs_spike", "RNG5%"], ascending=[False, False])
         .head(n)[["Symbol", "SPIKE%", "RNG5%", "DAY RNG%"]]
         .to_dict("records")
     )
-
-    # Losers = biggest DOWN spikes
     losers = (
         df[df["_spike"] < 0]
         .sort_values(["_abs_spike", "RNG5%"], ascending=[False, False])
         .head(n)[["Symbol", "SPIKE%", "RNG5%", "DAY RNG%"]]
         .to_dict("records")
     )
-
     return gainers, losers
 
+
 def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
+    """
+    Must return keys used by sector_page():
+      Symbol, Company, DirR, Price, %Change, Gap%, RVOLm, RFactor
+    """
     rows = []
     tf = _time_factor_ist_for_rvol(datetime.now(IST))
 
@@ -859,9 +813,9 @@ def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
         if not rr:
             continue
 
-        ltp = rr["ltp"]
-        day_open = rr["day_open"]
-        chg_open = ltp - day_open
+        pct_open = float(rr["pct_open"])
+        gap_pct = float(rr["gap_pct"])
+        ltp = float(rr["ltp"])
 
         st = DAILY_STATS.get(tok) or {}
         avg_vol_20 = st.get("avg_vol_20")
@@ -878,21 +832,33 @@ def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
         rows.append({
             "Symbol": s,
             "Company": symbol_to_name.get(s, ""),
-            "Price": round(float(ltp), 2),
-            "Chg (O)": round(float(chg_open), 2),
-            "Gap%": round(float(rr["gap_pct"]), 2),
-            "RVOL": (float(rvolm) if rvolm is not None else None),
-            "RFactor": float(rr["rfactor"]),
             "DirR": float(rr["dirr"]),
+            "Price": ltp,
+            "%Change": pct_open,
+            "Gap%": gap_pct,
+            "RVOLm": rvolm,
+            "RFactor": float(rr["rfactor"]),
         })
 
-    df = pd.DataFrame(rows)
-    if df.empty:
+    if not rows:
         return []
 
     sb = (sort_by or "").strip().upper()
-    key = "RVOL" if sb in ("RVOL", "RVOLM") else "RFactor"
-    return df.sort_values(key, ascending=False, na_position="last").to_dict("records")
+    if sb in ("RVOL", "RVOLM"):
+        key = "RVOLm"
+    elif sb in ("DIRR", "DIR R"):
+        key = "DirR"
+    elif sb in ("%CHANGE", "%CHG", "CHG"):
+        key = "%Change"
+    else:
+        key = "RFactor"
+
+    def sort_val(x):
+        v = x.get(key)
+        return float(v) if v is not None else float("-inf")
+
+    rows.sort(key=sort_val, reverse=True)
+    return rows
 
 
 def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
@@ -968,7 +934,6 @@ def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
 
 def compute_market_sentiment_proxy():
     adv = dec = unch = 0
-
     for tok in TOKENS:
         state_ = get_live_or_eod_state(tok)
         if not state_:
@@ -1066,7 +1031,7 @@ dash_app = dash.Dash(
 )
 server = dash_app.server
 
-# Volm plugin
+
 web.register_volm(
     dash_app,
     BASE=BASE,
@@ -1080,7 +1045,6 @@ web.register_volm(
     },
 )
 
-# FNO Movers plugin
 web.register_fno_movers(
     dash_app,
     BASE=BASE,
@@ -1118,10 +1082,16 @@ def dial_component(prefix: str, title: str):
 
 def _sector_grid_opts(sort_by: str) -> dict:
     sb = (sort_by or "RFactor").strip().upper()
-    sort_model = (
-        [{"colId": "rvol", "sort": "desc"}] if sb in ("RVOL", "RVOLM")
-        else [{"colId": "rfactor", "sort": "desc"}]
-    )
+
+    if sb in ("RVOL", "RVOLM"):
+        sort_model = [{"colId": "rvolm", "sort": "desc"}]
+    elif sb in ("DIRR", "DIR R"):
+        sort_model = [{"colId": "dirr", "sort": "desc"}]
+    elif sb in ("%CHANGE", "%CHG", "CHG"):
+        sort_model = [{"colId": "pct", "sort": "desc"}]
+    else:
+        sort_model = [{"colId": "rfactor", "sort": "desc"}]
+
     return {
         "domLayout": "autoHeight",
         "animateRows": True,
@@ -1133,25 +1103,92 @@ def _sector_grid_opts(sort_by: str) -> dict:
     }
 
 
-def sectors_page():
-    four_cols = [
+def sector_page(sector: str):
+    coldefs = [
         {
             "colId": "stock",
             "field": "Symbol",
             "headerName": "STOCK",
             "cellRenderer": "SymbolCell",
-            "minWidth": 10,
+            "minWidth": 130,
+            "maxWidth": 170,
+            "suppressSizeToFit": True,
+            "headerClass": "h-left",
+            "cellClass": "c-left",
+        },
+        {
+            "colId": "company",
+            "field": "Company",
+            "headerName": "COMPANY",
+            "minWidth": 180,
             "flex": 1,
             "headerClass": "h-left",
             "cellClass": "c-left",
         },
         {
-            "colId": "pctChg",
+            "colId": "dirr",
+            "field": "DirR",
+            "headerName": "DIR R",
+            "type": "rightAligned",
+            "cellRenderer": "Num2Cell",  # <-- fixed 2 decimals
+            "cellClassRules": {
+                "cell-pos": "params.value > 0",
+                "cell-neg": "params.value < 0",
+            },
+            "minWidth": 110,
+            "maxWidth": 130,
+            "suppressSizeToFit": True,
+            "headerClass": "ag-right-aligned-header h-right",
+            "cellClass": "ag-right-aligned-cell cell-num c-right",
+        },
+        {
+            "colId": "price",
+            "field": "Price",
+            "headerName": "PRICE",
+            "type": "rightAligned",
+            "cellRenderer": "Num2Cell",  # <-- fixed 2 decimals
+            "minWidth": 110,
+            "maxWidth": 130,
+            "suppressSizeToFit": True,
+            "headerClass": "ag-right-aligned-header h-right",
+            "cellClass": "ag-right-aligned-cell cell-num c-right",
+        },
+        {
+            "colId": "pct",
             "field": "%Change",
             "headerName": "%CHG",
-            "cellRenderer": "PctPill",
-            "minWidth": 150,
-            "maxWidth": 150,
+            "type": "rightAligned",
+            "cellRenderer": "Pct2Cell",  # <-- +0.20%
+            "cellClassRules": {
+                "cell-pos": "params.value > 0",
+                "cell-neg": "params.value < 0",
+            },
+            "minWidth": 105,
+            "maxWidth": 125,
+            "suppressSizeToFit": True,
+            "headerClass": "ag-right-aligned-header h-right",
+            "cellClass": "ag-right-aligned-cell cell-num c-right",
+        },
+        {
+            "colId": "gap",
+            "field": "Gap%",
+            "headerName": "GAP %",
+            "type": "rightAligned",
+            "cellRenderer": "Pct2Cell",  # <-- +0.20%
+            "minWidth": 105,
+            "maxWidth": 125,
+            "suppressSizeToFit": True,
+            "headerClass": "ag-right-aligned-header h-right",
+            "cellClass": "ag-right-aligned-cell cell-num c-right",
+        },
+        {
+            "colId": "rvolm",
+            "field": "RVOLm",
+            "headerName": "RVOLm",
+            "type": "rightAligned",
+            "cellRenderer": "Num2Cell",  # <-- fixed 2 decimals
+            "minWidth": 110,
+            "maxWidth": 130,
             "suppressSizeToFit": True,
             "headerClass": "ag-right-aligned-header h-right",
             "cellClass": "ag-right-aligned-cell cell-num c-right",
@@ -1160,64 +1197,96 @@ def sectors_page():
             "colId": "rfactor",
             "field": "RFactor",
             "headerName": "RFACTOR",
-            "cellRenderer": "RfactorPill",
-            "minWidth": 125,
-            "maxWidth": 170,
-            "suppressSizeToFit": True,
-            "headerClass": "ag-right-aligned-header h-right",
-            "cellClass": "ag-right-aligned-cell cell-num c-right",
-        },
-        {
-            "colId": "volume",
-            "field": "Vol",
-            "headerName": "VOLUME",
-            "cellRenderer": "VolPill",
-            "minWidth": 140,
-            "maxWidth": 190,
-            "suppressSizeToFit": True,
-            "headerClass": "ag-right-aligned-header h-right",
-            "cellClass": "ag-right-aligned-cell cell-num c-right",
-        },
-    ]
-
-    # Hot Now (5m) columns: STOCK | SPIKE% | RNG5% | DAY RNG%
-    hot_cols = [
-        four_cols[0],
-        {
-            "colId": "spike",
-            "field": "SPIKE%",
-            "headerName": "SPIKE%",
-            "cellRenderer": "PctPill",
-            "minWidth": 140,
-            "maxWidth": 160,
-            "suppressSizeToFit": True,
-            "headerClass": "ag-right-aligned-header h-right",
-            "cellClass": "ag-right-aligned-cell cell-num c-right",
-        },
-        {
-            "colId": "rng5",
-            "field": "RNG5%",
-            "headerName": "RNG5%",
             "type": "rightAligned",
-            "valueFormatter": {"function": "fmtPct(params.value)"},
+            "cellRenderer": "Num2Cell",  # <-- fixed 2 decimals
             "minWidth": 120,
             "maxWidth": 140,
             "suppressSizeToFit": True,
             "headerClass": "ag-right-aligned-header h-right",
             "cellClass": "ag-right-aligned-cell cell-num c-right",
         },
-        {
-            "colId": "dayrng",
-            "field": "DAY RNG%",
-            "headerName": "DAY RNG%",
-            "type": "rightAligned",
-            "valueFormatter": {"function": "fmtPct(params.value)"},
-            "minWidth": 130,
-            "maxWidth": 160,
-            "suppressSizeToFit": True,
-            "headerClass": "ag-right-aligned-header h-right",
-            "cellClass": "ag-right-aligned-cell cell-num c-right",
-        },
+    ]
+
+    grid_opts = {
+        "getRowId": {"function": "params.data.Symbol"},
+        "alwaysShowVerticalScroll": False,
+        "animateRows": False,
+        "suppressMenuHide": False,
+        "onGridReady": {"function": "params.api.sizeColumnsToFit();"},
+        "onGridSizeChanged": {"function": "params.api.sizeColumnsToFit();"},
+    }
+
+    title = sector.replace("_", " ").title()
+
+    return html.Div(
+        [
+            dcc.Interval(id="refresh_sector", interval=2000, n_intervals=0),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dcc.Link("← Back", href=BASE, className="stat-chip", style={"textDecoration": "none"}),
+                        width="auto",
+                    ),
+                    dbc.Col(html.H4(title, className="page-title mb-0"), width=True),
+                    dbc.Col(
+                        dbc.RadioItems(
+                            id="sector-sort",
+                            options=[
+                                {"label": "Sort: RFactor", "value": "RFactor"},
+                                {"label": "Sort: RVOLm", "value": "RVOLm"},
+                                {"label": "Sort: DirR", "value": "DirR"},
+                                {"label": "Sort: %Chg", "value": "%Change"},
+                            ],
+                            value="RFactor",
+                            inline=True,
+                        ),
+                        width="auto",
+                    ),
+                ],
+                className="align-items-center g-2 mb-2",
+            ),
+            dag.AgGrid(
+                id="grid",
+                className="ag-theme-alpine-dark grid-wrap compact-grid",
+                columnDefs=coldefs,
+                rowData=[],
+                defaultColDef={"sortable": True, "filter": True, "resizable": True},
+                dashGridOptions=grid_opts,
+                style={"width": "100%"},
+            ),
+        ],
+        className="page-wrap",
+    )
+
+
+def sectors_page():
+    four_cols = [
+        {"colId": "stock", "field": "Symbol", "headerName": "STOCK", "cellRenderer": "SymbolCell",
+         "minWidth": 10, "flex": 1, "headerClass": "h-left", "cellClass": "c-left"},
+        {"colId": "pctChg", "field": "%Change", "headerName": "%CHG", "cellRenderer": "PctPill",
+         "minWidth": 150, "maxWidth": 150, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right"},
+        {"colId": "rfactor", "field": "RFactor", "headerName": "RFACTOR", "cellRenderer": "RfactorPill",
+         "minWidth": 125, "maxWidth": 170, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right"},
+        {"colId": "volume", "field": "Vol", "headerName": "VOLUME", "cellRenderer": "VolPill",
+         "minWidth": 140, "maxWidth": 190, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right"},
+    ]
+
+    hot_cols = [
+        four_cols[0],
+        {"colId": "spike", "field": "SPIKE%", "headerName": "SPIKE%", "cellRenderer": "PctPill",
+         "minWidth": 140, "maxWidth": 160, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right"},
+        {"colId": "rng5", "field": "RNG5%", "headerName": "RNG5%", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtPct(params.value)"},
+         "minWidth": 120, "maxWidth": 140, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right"},
+        {"colId": "dayrng", "field": "DAY RNG%", "headerName": "DAY RNG%", "type": "rightAligned",
+         "valueFormatter": {"function": "fmtPct(params.value)"},
+         "minWidth": 130, "maxWidth": 160, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right", "cellClass": "ag-right-aligned-cell cell-num c-right"},
     ]
 
     grid_opts = {
@@ -1237,11 +1306,27 @@ def sectors_page():
 
             dbc.Row(
                 [
-                    dbc.Col(dial_component("sentiment", "Sentiment Dial"), md=6),
-                    dbc.Col(dial_component("pcr", "NIFTY OI PCR"), md=6),
+                    dbc.Col(html.H4("Sectors", className="page-title sectors-title mb-0"), width="auto"),
+                    dbc.Col(
+                        dbc.RadioItems(
+                            id="sectors-sort",
+                            options=[
+                                {"label": "Sort: RVOLm", "value": "RVOLm"},
+                                {"label": "Sort: RVOLm Mean", "value": "RVOLmMean"},
+                                {"label": "Sort: DirR", "value": "DirR"},
+                            ],
+                            value="RVOLmMean",
+                            inline=True,
+                            className="sectors-sort ms-2 mb-0",
+                        ),
+                        width=True,
+                    ),
                 ],
-                className="g-2 dials-row",
+                className="sectors-header align-items-center g-2 mb-2",
             ),
+
+            html.Div(id="sector-bars", className="sector-bars-wrap"),
+            html.Div("RVOLm = (Σbuy−Σsell). RVOLm Mean = (Σbuy−Σsell)/N. DirR = mean directional rfactor.", className="hint"),
 
             html.Hr(),
 
@@ -1279,28 +1364,6 @@ def sectors_page():
                     ),
                 ],
                 className="g-2",
-            ),
-
-            html.Hr(),
-
-            html.H4("Sectors", className="page-title"),
-
-            dbc.RadioItems(
-                id="sectors-sort",
-                options=[
-                    {"label": "Sort: RVOLm", "value": "RVOLm"},
-                    {"label": "Sort: RVOLm Mean", "value": "RVOLmMean"},
-                    {"label": "Sort: DirR", "value": "DirR"},
-                ],
-                value="RVOLm",
-                inline=True,
-                className="mb-2",
-            ),
-
-            html.Div(id="sector-bars", className="sector-bars-wrap"),
-            html.Div(
-                "RVOLm = (Σbuy−Σsell). RVOLm Mean = (Σbuy−Σsell)/N. DirR = mean directional rfactor.",
-                className="hint",
             ),
 
             html.Hr(),
@@ -1384,112 +1447,15 @@ def sectors_page():
                 ],
                 className="g-2",
             ),
-        ],
-        className="page-wrap",
-    )
 
-
-def sector_page(sector: str):
-    xfmt = (
-        "params.value==null ? '—' : "
-        "(((Math.abs(params.value) < 1) ? params.value.toFixed(2) : params.value.toFixed(0)) + 'x')"
-    )
-
-    return html.Div(
-        [
-            dcc.Interval(id="refresh_sector", interval=2000, n_intervals=0),
+            html.Hr(),
 
             dbc.Row(
                 [
-                    dbc.Col(
-                        dbc.Button(
-                            "Back",
-                            href=f"{BASE}",
-                            color="secondary",
-                            outline=True,
-                            className="btn-back",
-                        ),
-                        width="auto",
-                    ),
+                    dbc.Col(dial_component("sentiment", "Sentiment Dial"), md=6),
+                    dbc.Col(dial_component("pcr", "NIFTY OI PCR"), md=6),
                 ],
-                className="g-2 mb-2",
-            ),
-
-            dbc.Row(
-                [
-                    dbc.Col(html.H4(f"{sector} Stocks", className="page-title sector-title"), width=True),
-                    dbc.Col(
-                        dbc.RadioItems(
-                            id="sector-sort",
-                            options=[
-                                {"label": "Sort: RFactor", "value": "RFactor"},
-                                {"label": "Sort: RVOLm", "value": "RVOLm"},
-                            ],
-                            value="RFactor",
-                            inline=True,
-                            className="ms-2",
-                        ),
-                        width="auto",
-                    ),
-                ],
-                className="align-items-center g-2",
-            ),
-
-            dag.AgGrid(
-                id="grid",
-                className="ag-theme-alpine-dark grid-wrap",
-                columnDefs=[
-                    {"colId": "stock", "field": "Symbol", "headerName": "STOCK", "pinned": "left",
-                     "cellRenderer": "StockCell", "minWidth": 260},
-                    
-                    {"colId": "price", "field": "Price", "headerName": "PRICE", "type": "rightAligned",
-                     "valueFormatter": {"function": "fmt2(params.value)"},
-                     "cellStyle": {"fontWeight": "700"},  # bold
-                     "minWidth": 120, "flex": 1},
-
-                    {"colId": "dirr", "field": "DirR", "headerName": "MOMENTUM", "type": "rightAligned",
-                     "valueFormatter": {"function": xfmt},
-                     "cellClassRules": {
-                         "cell-pos": "params.value > 0",
-                         "cell-neg": "params.value < 0",
-                         "cell-zero": "params.value === 0"
-                     },
-                     "minWidth": 140, "flex": 1},
-
-                    
-
-                    {"colId": "chgO", "field": "Chg (O)", "headerName": "CHG", "type": "rightAligned",
-                     "valueFormatter": {"function": "fmtSigned2(params.value)"},
-                     "cellClassRules": {
-                         "cell-pos": "params.value > 0",
-                         "cell-neg": "params.value < 0",
-                         "cell-zero": "params.value === 0"
-                     },
-                     "minWidth": 120, "flex": 1},
-
-                    {"colId": "gapPct", "field": "Gap%", "headerName": "GAP", "type": "rightAligned",
-                     "valueFormatter": {"function": "fmtPct(params.value)"},
-                     "cellClassRules": {
-                         "cell-pos": "params.value > 0",
-                         "cell-neg": "params.value < 0",
-                         "cell-zero": "params.value === 0"
-                     },
-                     "minWidth": 110, "flex": 1},
-
-                    {"colId": "rvol", "field": "RVOL", "headerName": "RVOLM", "type": "rightAligned",
-                     "cellRenderer": "RfactorPill",
-                     "valueFormatter": {"function": "fmt2(params.value)"},
-                     "minWidth": 120, "flex": 1},
-
-                    {"colId": "rfactor", "field": "RFactor", "headerName": "RFACTOR", "type": "rightAligned",
-                     "valueFormatter": {"function": xfmt},
-                     "cellStyle": {"fontWeight": "700"},  # bold
-                     "minWidth": 130, "flex": 1},
-                ],
-                rowData=[],
-                defaultColDef={"sortable": True, "filter": True, "resizable": True},
-                dashGridOptions=_sector_grid_opts("RFactor"),
-                style={"height": "auto", "width": "100%"},
+                className="g-2 dials-row",
             ),
         ],
         className="page-wrap",
@@ -1505,10 +1471,8 @@ dash_app.layout = dbc.Container(
             dbc.Row(
                 [
                     dbc.Col(
-                        html.Div(
-                            [html.Img(src=dash.get_asset_url("turbotrades.svg"), className="tt-logo")],
-                            className="tt-brand",
-                        ),
+                        html.Div([html.Img(src=dash.get_asset_url("turbotrades.svg"), className="tt-logo")],
+                                 className="tt-brand"),
                         width=True,
                     ),
                     dbc.Col(html.Div(id="top-stats"), width="auto"),
@@ -1520,6 +1484,14 @@ dash_app.layout = dbc.Container(
         html.Div(id="app-body"),
     ],
 )
+
+
+def _extract_sector_from_path(pn: str) -> Optional[str]:
+    pn = (pn or "").strip()
+    if "/sector/" not in pn:
+        return None
+    sector = unquote(pn.split("/sector/", 1)[1]).strip("/").upper()
+    return sector or None
 
 
 @dash_app.callback(Output("app-body", "children"), Input("url", "pathname"))
@@ -1546,12 +1518,11 @@ def route(pathname):
             },
         )
 
-    if pn.startswith(f"{BASE}sector/"):
-        sector = unquote(pn.split(f"{BASE}sector/")[1]).upper()
+    sector = _extract_sector_from_path(pn)
+    if sector:
         return sector_page(sector) if sector in SECTOR_DEFINITIONS else dbc.Alert("Sector not found", color="danger")
 
     return sectors_page()
-
 
 
 def _oi_inference_chip():
@@ -1589,52 +1560,62 @@ def update_top_stats(_):
 
     with LOCK:
         offline = (time.time() - LAST_TICK_TS) > 10 if LAST_TICK_TS else True
-        tps = _get_tps()
         tot = TOTAL_TICKS
-
+        sm = compute_market_sentiment_proxy()
         d_done = DAILY_SEED_DONE
         d_done_n = int(DAILY_SEED_PROGRESS.get("done", 0) or 0)
         d_total = int(DAILY_SEED_PROGRESS.get("total", 0) or 0)
         d_err = int(DAILY_SEED_ERRORS or 0)
 
-    # FNO seed progress (near expiry)
-    f_running = False
-    f_done_n = 0
-    f_total = 0
-    f_err = 0
-    f_last_err = None
-    try:
-        with fnoseed.state_lock:
-            futdf = fnoseed.FNO_FUT_DF
-            fut_loaded = bool(futdf is not None and not futdf.empty)
-            near = fnoseed.near_expiry_from_df(futdf, IST) if fut_loaded else None
-            near_s = str(near) if near else None
+    pn = compute_real_nifty_oi_pcr(strikes_around_atm=PCR_STRIKES_AROUND_ATM)
 
-            prog = dict(fnoseed.PREV_OI_PROGRESS.get(near_s) or {}) if near_s else {}
-            f_running = bool(prog.get("running"))
-            f_done_n = int(prog.get("done") or 0)
-            f_total = int(prog.get("total") or 0)
-            f_err = int(prog.get("errors") or 0)
-            f_last_err = fnoseed.LAST_ERROR
-    except Exception as e:
-        f_last_err = repr(e)
+    sent_label = str(sm.get("label") or "NEUTRAL").upper()
+    sent_score = float(sm.get("score") or 0.0)
+    if sent_label == "BULLISH":
+        sent_style = {"color": "var(--good)", "borderColor": "rgba(46, 213, 115, 0.55)"}
+    elif sent_label == "BEARISH":
+        sent_style = {"color": "var(--bad)", "borderColor": "rgba(255, 71, 87, 0.55)"}
+    else:
+        sent_style = {}
+
+    sentiment_chip = html.Div(
+        f"Sentiment: {sent_label} ({sent_score:+.2f})",
+        className="stat-chip",
+        style=sent_style,
+        title=f"Adv {sm.get('adv',0)} • Dec {sm.get('dec',0)} • Unch {sm.get('unch',0)}",
+    )
+
+    if pn and pn.get("pcr") is not None:
+        pcr = float(pn["pcr"])
+        pcr_lbl = pcr_label_from_value(pcr)
+        if pcr_lbl in ("BUY", "STRONG BUY"):
+            pcr_style = {"color": "var(--good)", "borderColor": "rgba(46, 213, 115, 0.55)"}
+        elif pcr_lbl in ("SELL", "STRONG SELL"):
+            pcr_style = {"color": "var(--bad)", "borderColor": "rgba(255, 71, 87, 0.55)"}
+        else:
+            pcr_style = {}
+
+        pcr_chip = html.Div(
+            f"NIFTY PCR: {pcr:.2f} ({pcr_lbl})",
+            className="stat-chip",
+            style=pcr_style,
+            title=f"Expiry {pn.get('expiry')} • ATM {pn.get('atm')} • Updated {pn.get('updated_at')}",
+        )
+    else:
+        pcr_chip = html.Div("NIFTY PCR: LOADING", className="stat-chip")
 
     chips = [
         dbc.Badge("Offline" if offline else "Live", color=("danger" if offline else "success"), className="stat-badge"),
-
         html.A("Volm", href=f"{BASE}volm", target="_blank", className="stat-chip",
                style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"}),
-
         html.A("FNO Movers", href=f"{BASE}fnomovers", target="_blank", className="stat-chip",
                style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"}),
 
-        html.A("OpenInterest", href=f"{BASE}openinterest", target="_blank", className="stat-chip",
-               style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"}),
-
         _oi_inference_chip(),
+        sentiment_chip,
+        pcr_chip,
     ]
 
-    # Show DAILY seed badge while running (same as your current behavior)
     if not d_done:
         chips.append(
             dbc.Badge(
@@ -1644,30 +1625,8 @@ def update_top_stats(_):
                 style={"marginLeft": "8px"},
             )
         )
-    else:
-        # After DAILY seed completes, show FNO OI seeding badge ONLY while it's running
-        if f_running:
-            chips.append(
-                dbc.Badge(
-                    f"FNO OI Seeding {f_done_n}/{f_total} (err {f_err})",
-                    color="warning",
-                    className="stat-badge",
-                    style={"marginLeft": "8px"},
-                )
-            )
-        # Optional: if FNO seed fails before it starts and never runs, show error badge
-        elif f_last_err and (f_total == 0 and f_done_n == 0):
-            chips.append(
-                dbc.Badge(
-                    "FNO OI Seed ERR",
-                    color="danger",
-                    className="stat-badge",
-                    style={"marginLeft": "8px"},
-                )
-            )
 
     chips += [
-        html.Div(f"TPS {tps:.1f}", className="stat-chip"),
         html.Div(f"Ticks {tot:,}", className="stat-chip"),
         html.Div(f"Updated {updated_str}", className="stat-chip"),
     ]
@@ -1680,7 +1639,7 @@ def update_top_stats(_):
     Input("sectors-sort", "value"),
 )
 def render_sector_bars(_, sort_by):
-    sort_by = (sort_by or "RVOLm").strip()
+    sort_by = (sort_by or "RVOLmMean").strip()
 
     try:
         with LOCK:
@@ -1693,43 +1652,92 @@ def render_sector_bars(_, sort_by):
         else:
             metric = "RVOLmNetSum"
 
-        items = sorted(agg.items(), key=lambda kv: float(kv[1].get(metric, 0.0)), reverse=True)
+        items = sorted(
+            agg.items(),
+            key=lambda kv: float(kv[1].get(metric, 0.0) or 0.0),
+            reverse=True,
+        )
         if not items:
             return [html.Div("Loading sector bars…", className="hint")]
 
-        max_ref = max([abs(float(v.get(metric, 0.0))) for _, v in items] + [1e-6])
+        vals = [abs(float(v.get(metric, 0.0) or 0.0)) for _, v in items]
+        raw_max = max(vals) if vals else 0.0
 
-        children = []
-        for sector, m in items:
-            val = float(m.get(metric, 0.0))
-            h = int(10 + 150 * (abs(val) / max_ref))
-            h = min(h, 150)
-
-            cls = "bar-green" if val >= 0 else "bar-red"
-            label = f"{val:+.2f}×"
-
-            if metric in ("RVOLmNetSum", "RVOLmNetMean"):
-                title = (
-                    f"RVOLm Net SUM {float(m.get('RVOLmNetSum', 0.0)):+.2f}× | "
-                    f"Net MEAN {float(m.get('RVOLmNetMean', 0.0)):+.2f}× | "
-                    f"Gross MEAN {float(m.get('RVOLmGrossMean', 0.0)):.2f}× | "
-                    f"N {int(float(m.get('N', 0.0)))} (buy {int(float(m.get('BuyN', 0.0)))}, sell {int(float(m.get('SellN', 0.0)))})"
-                )
+        def nice_ceil(x: float) -> float:
+            x = float(x)
+            if x <= 0:
+                return 1.0
+            exp = math.floor(math.log10(x))
+            f = x / (10 ** exp)
+            if f <= 1:
+                nf = 1
+            elif f <= 2:
+                nf = 2
+            elif f <= 5:
+                nf = 5
             else:
-                title = f"DirR {val:+.2f}× | RVOLm Net MEAN {float(m.get('RVOLmNetMean', 0.0)):+.2f}×"
+                nf = 10
+            return float(nf * (10 ** exp))
+
+        tick_max = nice_ceil(raw_max)
+        tick_half = tick_max / 2.0
+
+        def fmt(x: float) -> str:
+            return f"{x:.2f}"
+
+        axis = html.Div(
+            html.Div(
+                [
+                    html.Div(fmt(tick_max), className="sector-axis-tick"),
+                    html.Div(fmt(tick_half), className="sector-axis-tick"),
+                    html.Div(fmt(0.0), className="sector-axis-tick"),
+                    html.Div(fmt(-tick_half), className="sector-axis-tick"),
+                    html.Div(fmt(-tick_max), className="sector-axis-tick"),
+                ],
+                className="sector-axis-ticks",
+            ),
+            className="sector-hist-axis",
+        )
+
+        children = [axis]
+
+        max_bar = int(os.getenv("SECTOR_MAX_BAR_PX", "160"))
+        denom = tick_max if tick_max > 1e-9 else 1.0
+
+        for sector, m in items:
+            val = float(m.get(metric, 0.0) or 0.0)
+            disp = sector.replace("_", " ").upper()
+            val_str = f"{val:+.2f}"
+
+            bar_h = int(6 + max_bar * (abs(val) / denom))
+            bar_h = min(bar_h, max_bar)
 
             children.append(
                 dcc.Link(
                     href=f"{BASE}sector/{sector}",
-                    className="sector-link",
+                    className="sector-hist-link",
                     children=html.Div(
                         [
-                            html.Div(label, className="bar-value"),
-                            html.Div(className=f"glow-bar {cls}", style={"height": f"{h}px"}),
-                            html.Div(sector.title(), className="bar-name"),
+                            html.Div(
+                                [
+                                    html.Div(disp, className="sector-hist-tip-name"),
+                                    html.Div(val_str, className="sector-hist-tip-val"),
+                                ],
+                                className="sector-hist-tooltip",
+                            ),
+                            html.Div(
+                                [
+                                    html.Div(
+                                        className=("sector-hist-bar pos" if val >= 0 else "sector-hist-bar neg"),
+                                        style={"height": f"{bar_h}px"},
+                                    )
+                                ],
+                                className="sector-hist-track",
+                            ),
+                            html.Div(disp, className="sector-hist-name"),
                         ],
-                        className="sector-bar-card",
-                        title=title,
+                        className="sector-hist-col",
+                        title=f"{metric} {val_str}",
                     ),
                 )
             )
@@ -1864,28 +1872,24 @@ def update_hot_now(_):
     global HOT_LAST_5M_KEY
 
     now = datetime.now(IST)
-
-    # 5-min boundary key (changes only at :00, :05, :10, ...)
     bucket_min = (now.minute // 5) * 5
     key = f"{now.date().isoformat()} {now.hour:02d}:{bucket_min:02d}"
 
-    # First time: compute immediately
     if HOT_LAST_5M_KEY is None:
         HOT_LAST_5M_KEY = key
         with LOCK:
             return top_hot_now_rows(n=15)
 
-    # Update only right at the boundary (first ~2 seconds of the boundary minute)
     if (now.minute % 5) != 0 or now.second > 2:
         return dash.no_update, dash.no_update
 
-    # Already updated for this boundary minute
     if key == HOT_LAST_5M_KEY:
         return dash.no_update, dash.no_update
 
     HOT_LAST_5M_KEY = key
     with LOCK:
         return top_hot_now_rows(n=15)
+
 
 @dash_app.callback(
     Output("grid", "rowData"),
@@ -1896,10 +1900,10 @@ def update_hot_now(_):
 )
 def update_grid(_n, pathname, sort_by):
     pn = (pathname or "").strip()
-    if not pn.startswith(f"{BASE}sector/"):
+    sector = _extract_sector_from_path(pn)
+    if not sector:
         return dash.no_update, dash.no_update
 
-    sector = unquote(pn.split(f"{BASE}sector/")[1]).upper()
     if sector not in SECTOR_DEFINITIONS:
         return [], _sector_grid_opts(sort_by)
 
@@ -1925,7 +1929,6 @@ async def _startup():
     load_nfo_instruments_once()
 
     def _start_fno_seed_when_ready():
-        # wait until daily seed is done to reduce rate-limit failures
         while True:
             with LOCK:
                 done = DAILY_SEED_DONE
@@ -1941,7 +1944,6 @@ async def _startup():
         )
 
     threading.Thread(target=_start_fno_seed_when_ready, daemon=True).start()
-
     await openinterest.on_startup()
 
 

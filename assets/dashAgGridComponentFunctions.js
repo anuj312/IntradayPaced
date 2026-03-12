@@ -4,12 +4,14 @@
 (function () {
   const w = window;
 
-  // Ensure registry exists
+  // Dash AG Grid registries
   const dagcomponentfuncs =
     (w.dashAgGridComponentFunctions = w.dashAgGridComponentFunctions || {});
+  const dagfuncs =
+    (w.dashAgGridFunctions = w.dashAgGridFunctions || {});
 
   // -----------------------------
-  // Formatters (also exposed for valueFormatter strings)
+  // Formatters
   // -----------------------------
   function toNum(v) {
     const n = Number(v);
@@ -44,29 +46,58 @@
     return String(Math.round(n));
   }
 
-  // Expose for Dash valueFormatter usage (strings)
+  // Smart number (optional): trims trailing zeros
+  // 23.00 -> "23", 1.20 -> "1.2", 10.30 -> "10.3"
+  function fmtSmart(v) {
+    const n = toNum(v);
+    if (n === null) return "—";
+    return n.toFixed(2).replace(/\.?0+$/, "");
+  }
+
+  function fmtPctSmart(v) {
+    const n = toNum(v);
+    if (n === null) return "—";
+    const s = fmtSmart(n);
+    return (n >= 0 ? "+" : "") + s + "%";
+  }
+
+  // Expose for Dash valueFormatter strings (recommended place)
+  dagfuncs.toNum = toNum;
+  dagfuncs.fmt2 = fmt2;
+  dagfuncs.fmtSigned2 = fmtSigned2;
+  dagfuncs.fmtPct = fmtPct;
+  dagfuncs.fmtVolCompactIN = fmtVolCompactIN;
+  dagfuncs.fmtSmart = fmtSmart;
+  dagfuncs.fmtPctSmart = fmtPctSmart;
+
+  // Also expose globally (harmless, helps debugging)
+  w.toNum = toNum;
   w.fmt2 = fmt2;
   w.fmtSigned2 = fmtSigned2;
   w.fmtPct = fmtPct;
   w.fmtVolCompactIN = fmtVolCompactIN;
+  w.fmtSmart = fmtSmart;
+  w.fmtPctSmart = fmtPctSmart;
 
   // -----------------------------
   // Helpers
   // -----------------------------
   function getReact() {
-    // Dash AG Grid uses window.React in most setups
     return w.React;
   }
 
   function tvUrlFor(sym) {
-  const tvSym = (sym === "BAJAJ-AUTO") ? "BAJAJ_AUTO" : sym;
+    const s = sym || "";
 
-  return (
-    "https://www.tradingview.com/chart/?symbol=" +
-    encodeURIComponent("NSE:" + tvSym) +
-    "&interval=5"
-  );
-}
+    // Special-case only what you asked for
+    const tvSym = (s === "BAJAJ-AUTO") ? "BAJAJ_AUTO" : s;
+
+    return (
+      "https://www.tradingview.com/chart/?symbol=" +
+      encodeURIComponent("NSE:" + tvSym) +
+      "&interval=5"
+    );
+  }
 
   // -----------------------------
   // Cell renderers
@@ -128,7 +159,7 @@
     ]);
   };
 
-  // %Change pill
+  // %Change pill (with arrows) — used on home grids
   dagcomponentfuncs.PctPill = function (params) {
     const React = getReact();
     if (!React) return params.value ?? "";
@@ -155,7 +186,7 @@
     return React.createElement("span", { className: "val-pill rf" }, fmt2(v) + "×");
   };
 
-  // Volume pill
+  // Volume pill (compact IN)
   dagcomponentfuncs.VolPill = function (params) {
     const React = getReact();
     if (!React) return params.value ?? "";
@@ -165,5 +196,28 @@
       return React.createElement("span", { className: "val-pill vol neutral" }, "—");
     }
     return React.createElement("span", { className: "val-pill vol" }, fmtVolCompactIN(v));
+  };
+
+  // -----------------------------
+  // NEW: Plain numeric cells for sector page (no pills)
+  // Guaranteed fixed 2 decimals: 0.20, 1.20, 23.33
+  // -----------------------------
+  dagcomponentfuncs.Num2Cell = function (params) {
+    const React = getReact();
+    if (!React) return params.value ?? "";
+
+    const v = toNum(params.value);
+    if (v === null) return React.createElement("span", null, "—");
+    return React.createElement("span", null, fmt2(v));
+  };
+
+  // Signed percent with 2 decimals: +0.20%
+  dagcomponentfuncs.Pct2Cell = function (params) {
+    const React = getReact();
+    if (!React) return params.value ?? "";
+
+    const v = toNum(params.value);
+    if (v === null) return React.createElement("span", null, "—");
+    return React.createElement("span", null, fmtPct(v));
   };
 })();
