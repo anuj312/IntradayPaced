@@ -116,12 +116,12 @@ SECTOR_DEFINITIONS = {
         "BAJAJ-AUTO", "ASHOKLEY",
         "MARUTI", "TVSMOTOR",
         "MOTHERSON", "SONACOMS",
-        "UNOMINDA", "TATAMOTORS",
+        "UNOMINDA", "TMPV",
         "AMBER"
     ],
     "IT": [
         "INFY", "TCS", "HCLTECH", "WIPRO",
-        "TECHM", "LTIM", "MPHASIS",
+        "TECHM", "LTM", "MPHASIS",
         "KPITTECH", "COFORGE", "PERSISTENT",
         "TATAELXSI", "OFSS", "CAMS",
         "TATATECH", "NAUKRI", "KAYNES"
@@ -203,7 +203,7 @@ SECTOR_DEFINITIONS = {
         "MAXHEALTH", "NESTLEIND", "NTPC", "ONGC", "POWERGRID", "RELIANCE",
         "SBILIFE", "SHRIRAMFIN", "SBIN", "SUNPHARMA", "TCS", "TATACONSUM",
         "TATASTEEL", "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
-        "TATAMOTORS", "ETERNAL"
+        "TMPV", "ETERNAL"
     ],
 }
 
