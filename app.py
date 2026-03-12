@@ -1120,7 +1120,6 @@ def sector_page(sector: str):
             "colId": "company",
             "field": "Company",
             "headerName": "COMPANY",
-            "cellRenderer": "CompanyLinkCell",
             "minWidth": 180,
             "flex": 1,
             "headerClass": "h-left",
@@ -1555,47 +1554,6 @@ def _oi_inference_chip():
     return html.Div(text, className="stat-chip", style=style, title=label)
 
 
-def _fno_oi_seed_chip():
-    """
-    Header chip for FNO prev-OI seed status from fnoseed.
-    Always returns a chip (READY / SEEDING / NOT SEEDED / ERR / WAIT).
-    """
-    try:
-        with fnoseed.state_lock:
-            futdf = fnoseed.FNO_FUT_DF
-            fut_loaded = bool(futdf is not None and not futdf.empty)
-            near = fnoseed.near_expiry_from_df(futdf, IST) if fut_loaded else None
-            near_s = str(near) if near else None
-
-            prog = dict(fnoseed.PREV_OI_PROGRESS.get(near_s) or {}) if near_s else {}
-            running = bool(prog.get("running"))
-            done = int(prog.get("done") or 0)
-            total = int(prog.get("total") or 0)
-            errors = int(prog.get("errors") or 0)
-            last_err = fnoseed.LAST_ERROR
-    except Exception as e:
-        return html.Div("FNO OI: ERR", className="stat-chip", title=repr(e))
-
-    # Not started yet / waiting prerequisites
-    if not fut_loaded:
-        return html.Div("FNO OI: WAIT", className="stat-chip", title="FUT universe not loaded yet")
-
-    if total <= 0 and not running:
-        # no progress info yet
-        if last_err:
-            return html.Div("FNO OI: ERR", className="stat-chip", style={"color": "var(--bad)"}, title=str(last_err))
-        return html.Div("FNO OI: NOT SEEDED", className="stat-chip", title="Prev-OI map empty")
-
-    # Running
-    if running:
-        txt = f"FNO OI: SEEDING {done}/{total} (err {errors})"
-        return html.Div(txt, className="stat-chip", style={"color": "#ffcc66"}, title=str(last_err or ""))
-
-    # Done
-    txt = f"FNO OI: READY {done}/{total} (err {errors})"
-    style = {"color": "var(--good)"} if errors == 0 else {"color": "#ffcc66"}
-    return html.Div(txt, className="stat-chip", style=style, title=str(last_err or ""))
-
 @dash_app.callback(Output("top-stats", "children"), Input("top_refresh", "n_intervals"))
 def update_top_stats(_):
     updated_str = datetime.now(IST).strftime("%H:%M:%S")
@@ -1604,13 +1562,13 @@ def update_top_stats(_):
         offline = (time.time() - LAST_TICK_TS) > 10 if LAST_TICK_TS else True
         tot = TOTAL_TICKS
         sm = compute_market_sentiment_proxy()
-
         d_done = DAILY_SEED_DONE
         d_done_n = int(DAILY_SEED_PROGRESS.get("done", 0) or 0)
         d_total = int(DAILY_SEED_PROGRESS.get("total", 0) or 0)
         d_err = int(DAILY_SEED_ERRORS or 0)
 
-    # ---- Sentiment chip ----
+    pn = compute_real_nifty_oi_pcr(strikes_around_atm=PCR_STRIKES_AROUND_ATM)
+
     sent_label = str(sm.get("label") or "NEUTRAL").upper()
     sent_score = float(sm.get("score") or 0.0)
     if sent_label == "BULLISH":
@@ -1627,8 +1585,6 @@ def update_top_stats(_):
         title=f"Adv {sm.get('adv',0)} • Dec {sm.get('dec',0)} • Unch {sm.get('unch',0)}",
     )
 
-    # ---- PCR chip ----
-    pn = compute_real_nifty_oi_pcr(strikes_around_atm=PCR_STRIKES_AROUND_ATM)
     if pn and pn.get("pcr") is not None:
         pcr = float(pn["pcr"])
         pcr_lbl = pcr_label_from_value(pcr)
@@ -1648,51 +1604,18 @@ def update_top_stats(_):
     else:
         pcr_chip = html.Div("NIFTY PCR: LOADING", className="stat-chip")
 
-    # ---- FNO OI seed progress (show ONLY while running; only after DAILY seed done) ----
-    f_running = False
-    f_done_n = 0
-    f_total = 0
-    f_err = 0
-    try:
-        with fnoseed.state_lock:
-            futdf = fnoseed.FNO_FUT_DF
-            fut_loaded = bool(futdf is not None and not futdf.empty)
-            near = fnoseed.near_expiry_from_df(futdf, IST) if fut_loaded else None
-            near_s = str(near) if near else None
-            prog = dict(fnoseed.PREV_OI_PROGRESS.get(near_s) or {}) if near_s else {}
-
-            f_running = bool(prog.get("running"))
-            f_done_n = int(prog.get("done") or 0)
-            f_total = int(prog.get("total") or 0)
-            f_err = int(prog.get("errors") or 0)
-    except Exception:
-        pass
-
     chips = [
         dbc.Badge("Offline" if offline else "Live", color=("danger" if offline else "success"), className="stat-badge"),
-
-        html.A(
-            "Volm",
-            href=f"{BASE}volm",
-            target="_blank",
-            className="stat-chip",
-            style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"},
-        ),
-
-        html.A(
-            "FNO Movers",
-            href=f"{BASE}fnomovers",
-            target="_blank",
-            className="stat-chip",
-            style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"},
-        ),
+        html.A("Volm", href=f"{BASE}volm", target="_blank", className="stat-chip",
+               style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"}),
+        html.A("FNO Movers", href=f"{BASE}fnomovers", target="_blank", className="stat-chip",
+               style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"}),
 
         _oi_inference_chip(),
         sentiment_chip,
         pcr_chip,
     ]
 
-    # DAILY seed badge while running
     if not d_done:
         chips.append(
             dbc.Badge(
@@ -1702,24 +1625,11 @@ def update_top_stats(_):
                 style={"marginLeft": "8px"},
             )
         )
-    else:
-        # After DAILY seed completes: show FNO badge ONLY while running (hide once done)
-        if f_running:
-            chips.append(
-                dbc.Badge(
-                    f"FNO OI Seeding {f_done_n}/{f_total} (err {f_err})",
-                    color="warning",
-                    className="stat-badge",
-                    style={"marginLeft": "8px"},
-                )
-            )
 
-    # TPS intentionally hidden
     chips += [
         html.Div(f"Ticks {tot:,}", className="stat-chip"),
         html.Div(f"Updated {updated_str}", className="stat-chip"),
     ]
-
     return html.Div(chips, className="top-stats-wrap")
 
 

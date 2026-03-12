@@ -220,29 +220,4 @@
     if (v === null) return React.createElement("span", null, "—");
     return React.createElement("span", null, fmtPct(v));
   };
-  // Company name link -> TradingView (5m)
-  dagcomponentfuncs.CompanyLinkCell = function (params) {
-    const React = getReact();
-    if (!React) return params.value ?? "";
-
-    const name = params.value || "";
-    const sym = (params.data && params.data.Symbol) ? params.data.Symbol : "";
-    const url = tvUrlFor(sym);
-
-    return React.createElement(
-      "a",
-      {
-        href: url,
-        target: "_blank",
-        rel: "noopener noreferrer",
-        className: "company-link",
-        onClick: function (e) {
-          e.stopPropagation();
-        },
-        title: sym ? (sym + " • " + name) : name,
-      },
-      name
-    );
-  };
-
 })();
