@@ -52,6 +52,7 @@ POS_NEAR_LOW_TH = 0.20
 
 RANGE_EXP_MULT = 1.20
 RANGE_CONTR_MULT = 0.90
+VOLM_FUT_TOPK = int(os.getenv("VOLM_FUT_TOPK", "60"))  # compute avg20 only for top-K FUT volumes
 
 TOP_N = 15
 
@@ -374,7 +375,9 @@ def _compute_rvol20_unpaced_df(ctx: Dict[str, Any]) -> pd.DataFrame:
     """
     Momentum(20D) = near-month FUT volume(today) / avg20 FUT daily volume
     OI% = near-month FUT OI% vs prev-day OI (from fnoseed)
-    %Change = CASH % from open (kept)
+    %Change = CASH % from open
+    Optimization: only consider TOP-K near-expiry futures by current FUT volume,
+    which massively reduces historical_data() calls on first load.
     """
     IST = ctx["IST"]
     ALL_SYMBOLS = ctx["ALL_SYMBOLS"]
@@ -395,15 +398,38 @@ def _compute_rvol20_unpaced_df(ctx: Dict[str, Any]) -> pd.DataFrame:
     with fnoseed.state_lock:
         prev_oi_map = dict(fnoseed.PREV_OI_BY_EXPIRY.get(expiry_s) or {})
 
+    # Quote all near-expiry futures once
     keys = ["NFO:" + s for s in dfe["tradingsymbol"].astype(str).tolist()]
     q = _quote_many(keys, chunk_size=FNO_QUOTE_CHUNK)
 
-    u2fut_token: Dict[str, int] = dict(zip(dfe["name"].astype(str), dfe["instrument_token"].astype(int)))
-    u2fut_sym: Dict[str, str] = dict(zip(dfe["name"].astype(str), dfe["tradingsymbol"].astype(str)))
+    # Build (vol, underlying, fut_token, fut_tsym) list, then keep TOP-K by FUT volume
+    fut_rows: List[Tuple[int, str, int, str]] = []
+    for _, r in dfe.iterrows():
+        underlying = str(r.get("name") or "")
+        fut_token = int(r["instrument_token"])
+        fut_tsym = str(r["tradingsymbol"])
+
+        v = q.get("NFO:" + fut_tsym) or {}
+        fut_vol = int(v.get("volume") or 0)
+
+        if underlying:
+            fut_rows.append((fut_vol, underlying, fut_token, fut_tsym))
+
+    if not fut_rows:
+        return pd.DataFrame()
+
+    fut_rows.sort(key=lambda x: x[0], reverse=True)
+    fut_rows = fut_rows[: max(5, int(VOLM_FUT_TOPK))]
+
+    # Maps for quick lookup
+    u2fut_token: Dict[str, int] = {u: tok for _vol, u, tok, _tsym in fut_rows}
+    u2fut_sym: Dict[str, str] = {u: tsym for _vol, u, _tok, tsym in fut_rows}
 
     rows = []
     with LOCK:
-        for sym in ALL_SYMBOLS:
+        # Only loop underlyings that we actually kept (top-K)
+        for sym in u2fut_token.keys():
+            # CASH state
             cash_token = symbol_to_token.get(sym)
             if not cash_token:
                 continue
@@ -422,6 +448,7 @@ def _compute_rvol20_unpaced_df(ctx: Dict[str, Any]) -> pd.DataFrame:
 
             pct_open = (ltp - op) / op * 100.0
 
+            # FUT quote
             fut_token = u2fut_token.get(sym)
             fut_tsym = u2fut_sym.get(sym)
             if not fut_token or not fut_tsym:
@@ -430,16 +457,17 @@ def _compute_rvol20_unpaced_df(ctx: Dict[str, Any]) -> pd.DataFrame:
             v = q.get("NFO:" + fut_tsym) or {}
             fut_vol = v.get("volume")
             fut_oi_now = v.get("oi")
-
             if fut_vol is None:
                 continue
 
+            # Avg20 FUT volume (cached for the day)
             avg20_fut = fut_avg_vol_20d(int(fut_token), IST)
             if not avg20_fut or avg20_fut <= 0:
                 continue
 
             momentum = float(fut_vol) / (float(avg20_fut) + 1e-9)
 
+            # OI% vs prev OI seeded by fnoseed
             oi_pct = None
             oi_prev = prev_oi_map.get(int(fut_token))
             if fut_oi_now is not None and oi_prev is not None and int(oi_prev) != 0:
