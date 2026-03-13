@@ -1453,8 +1453,8 @@ def sectors_page():
 
             dbc.Row(
                 [
-                    dbc.Col(dial_component("sentiment", "Sentiment Dial"), md=6),
-                    dbc.Col(dial_component("pcr", "NIFTY OI PCR"), md=6),
+                    dbc.Col(dial_component("sentiment", "BIAS"), md=6),
+                    dbc.Col(dial_component("pcr", "PCR"), md=6),
                 ],
                 className="g-2 dials-row",
             ),
@@ -1621,7 +1621,7 @@ def update_top_stats(_):
         sent_style = {}
 
     sentiment_chip = html.Div(
-        f"Sentiment: {sent_label} ({sent_score:+.2f})",
+        f"BIAS: {sent_label} ({sent_score:+.2f})",
         className="stat-chip",
         style=sent_style,
         title=f"Adv {sm.get('adv',0)} • Dec {sm.get('dec',0)} • Unch {sm.get('unch',0)}",
@@ -1640,13 +1640,13 @@ def update_top_stats(_):
             pcr_style = {}
 
         pcr_chip = html.Div(
-            f"NIFTY PCR: {pcr:.2f} ({pcr_lbl})",
+            f"PCR: {pcr:.2f} ({pcr_lbl})",
             className="stat-chip",
             style=pcr_style,
-            title=f"Expiry {pn.get('expiry')} • ATM {pn.get('atm')} • Updated {pn.get('updated_at')}",
+            title=f"Expiry {pn.get('expiry')} • ATM {pn.get('atm')} • Time {pn.get('updated_at')}",
         )
     else:
-        pcr_chip = html.Div("NIFTY PCR: LOADING", className="stat-chip")
+        pcr_chip = html.Div("PCR: LOADING", className="stat-chip")
 
     # ---- FNO OI seed progress (show ONLY while running; only after DAILY seed done) ----
     f_running = False
@@ -1680,7 +1680,7 @@ def update_top_stats(_):
         ),
 
         html.A(
-            "FNO Movers",
+            "FNO",
             href=f"{BASE}fnomovers",
             target="_blank",
             className="stat-chip",
@@ -1717,7 +1717,7 @@ def update_top_stats(_):
     # TPS intentionally hidden
     chips += [
         html.Div(f"Ticks {tot:,}", className="stat-chip"),
-        html.Div(f"Updated {updated_str}", className="stat-chip"),
+        html.Div(f"Time {updated_str}", className="stat-chip"),
     ]
 
     return html.Div(chips, className="top-stats-wrap")
@@ -1729,12 +1729,17 @@ def update_top_stats(_):
     Input("sectors-sort", "value"),
 )
 def render_sector_bars(_, sort_by):
+    """
+    Dynamic sector histogram:
+      - Y-axis is true min..max (NOT symmetric)
+      - 0-line moves up/down dynamically
+      - Axis shows exactly 5 ticks: top, top/2, 0, bottom/2, bottom
+      - Sector names remain below bars (handled by CSS via .sector-hist-col / .sector-hist-name)
+    """
     sort_by = (sort_by or "RVOLmMean").strip()
 
     try:
-        with LOCK:
-            agg = compute_sector_aggregates()
-
+        # Pick metric
         if sort_by == "DirR":
             metric = "DirR"
         elif sort_by == "RVOLmMean":
@@ -1742,65 +1747,107 @@ def render_sector_bars(_, sort_by):
         else:
             metric = "RVOLmNetSum"
 
+        with LOCK:
+            agg = compute_sector_aggregates()
+
         items = sorted(
             agg.items(),
             key=lambda kv: float(kv[1].get(metric, 0.0) or 0.0),
             reverse=True,
         )
         if not items:
-            return [html.Div("Loading sector bars…", className="hint")]
+            return html.Div("Loading sector bars…", className="hint")
 
-        vals = [abs(float(v.get(metric, 0.0) or 0.0)) for _, v in items]
-        raw_max = max(vals) if vals else 0.0
+        # Values
+        vals = [float(m.get(metric, 0.0) or 0.0) for _, m in items]
+        raw_min = min(vals)
+        raw_max = max(vals)
 
-        def nice_ceil(x: float) -> float:
-            x = float(x)
-            if x <= 0:
-                return 1.0
-            exp = math.floor(math.log10(x))
-            f = x / (10 ** exp)
-            if f <= 1:
-                nf = 1
-            elif f <= 2:
-                nf = 2
-            elif f <= 5:
-                nf = 5
-            else:
-                nf = 10
-            return float(nf * (10 ** exp))
+        # Add a little padding so bars/ticks don't hug plot edges
+        span = raw_max - raw_min
+        pad = (0.08 * span) if span > 1e-9 else 0.25
 
-        tick_max = nice_ceil(raw_max)
-        tick_half = tick_max / 2.0
+        vmin = raw_min - pad
+        vmax = raw_max + pad
+
+        # Ensure 0 is inside range (so 0-line exists)
+        vmin = min(vmin, 0.0)
+        vmax = max(vmax, 0.0)
+
+        # Guard
+        if (vmax - vmin) <= 1e-9:
+            vmin, vmax = -1.0, 1.0
+
+        tick_min = float(vmin)
+        tick_max = float(vmax)
+        axis_span = float(tick_max - tick_min)
+        if axis_span <= 1e-12:
+            axis_span = 1.0
+
+        # 0-line position from TOP in %
+        zero_pct = ((tick_max - 0.0) / axis_span) * 100.0
+        zero_pct = max(0.0, min(100.0, zero_pct))
+
+        # Plot sizing
+        plot_h = int(os.getenv("SECTOR_PLOT_H_PX", "340"))
+        pos_px = plot_h * (zero_pct / 100.0)     # pixels available above 0
+        neg_px = plot_h - pos_px                 # pixels available below 0
+
+        # Domains used for scaling bar heights
+        pos_dom = max(0.0, tick_max)             # max positive on axis
+        neg_dom = max(0.0, -tick_min)            # max negative magnitude on axis
+        eps = 1e-12
 
         def fmt(x: float) -> str:
+            x = float(x)
+            if abs(x) < 5e-7:
+                x = 0.0
             return f"{x:.2f}"
 
+        # EXACTLY 5 axis labels like: 1, 0.50, 0, -0.50, -1 (but dynamic range)
+        ticks = [tick_max, tick_max / 2.0, 0.0, tick_min / 2.0, tick_min]
+
+        # ----- Axis (absolute ticks) -----
+        axis_ticks = []
+        for tv in ticks:
+            top_pct = ((tick_max - float(tv)) / axis_span) * 100.0
+            axis_ticks.append(
+                html.Div(
+                    fmt(tv),
+                    className="sector-axis-tick",
+                    style={"top": f"{top_pct:.2f}%"},
+                )
+            )
+
         axis = html.Div(
-            html.Div(
-                [
-                    html.Div(fmt(tick_max), className="sector-axis-tick"),
-                    html.Div(fmt(tick_half), className="sector-axis-tick"),
-                    html.Div(fmt(0.0), className="sector-axis-tick"),
-                    html.Div(fmt(-tick_half), className="sector-axis-tick"),
-                    html.Div(fmt(-tick_max), className="sector-axis-tick"),
-                ],
-                className="sector-axis-ticks",
-            ),
+            axis_ticks,
             className="sector-hist-axis",
+            style={"height": f"{plot_h}px"},
         )
 
-        children = [axis]
+        # ----- Build plot -----
+        children = [
+            axis,
+            html.Div(className="sector-hist-zero-line"),  # global 0-line across plot
+        ]
 
-        max_bar = int(os.getenv("SECTOR_MAX_BAR_PX", "160"))
-        denom = tick_max if tick_max > 1e-9 else 1.0
+        bar_min_px = 4.0
 
         for sector, m in items:
             val = float(m.get(metric, 0.0) or 0.0)
             disp = sector.replace("_", " ").upper()
             val_str = f"{val:+.2f}"
 
-            bar_h = int(6 + max_bar * (abs(val) / denom))
-            bar_h = min(bar_h, max_bar)
+            # Scale bar height into available pos/neg pixel space
+            if val >= 0:
+                bar_px = (val / (pos_dom + eps)) * pos_px if pos_dom > 0 and pos_px > 0 else 0.0
+                bar_px = min(max(bar_px, 0.0), pos_px)
+            else:
+                bar_px = ((-val) / (neg_dom + eps)) * neg_px if neg_dom > 0 and neg_px > 0 else 0.0
+                bar_px = min(max(bar_px, 0.0), neg_px)
+
+            if 0 < bar_px < bar_min_px:
+                bar_px = bar_min_px
 
             children.append(
                 dcc.Link(
@@ -1808,6 +1855,7 @@ def render_sector_bars(_, sort_by):
                     className="sector-hist-link",
                     children=html.Div(
                         [
+                            # tooltip
                             html.Div(
                                 [
                                     html.Div(disp, className="sector-hist-tip-name"),
@@ -1815,15 +1863,18 @@ def render_sector_bars(_, sort_by):
                                 ],
                                 className="sector-hist-tooltip",
                             ),
+                            # track + bar
                             html.Div(
                                 [
                                     html.Div(
                                         className=("sector-hist-bar pos" if val >= 0 else "sector-hist-bar neg"),
-                                        style={"height": f"{bar_h}px"},
+                                        style={"height": f"{bar_px:.0f}px"},
                                     )
                                 ],
                                 className="sector-hist-track",
+                                style={"height": f"{plot_h}px"},
                             ),
+                            # sector name (below histogram)
                             html.Div(disp, className="sector-hist-name"),
                         ],
                         className="sector-hist-col",
@@ -1832,11 +1883,18 @@ def render_sector_bars(_, sort_by):
                 )
             )
 
-        return children
+        return html.Div(
+            children,
+            className="sector-hist-plot",
+            style={
+                "--zero": f"{zero_pct:.2f}%",
+                "--axisW": "68px",
+            },
+        )
 
     except Exception:
         log.exception("render_sector_bars crashed")
-        return [html.Div("Sector bars error (see logs).", className="hint")]
+        return html.Div("Sector bars error (see logs).", className="hint")
 
 
 def _state_class(label: str) -> str:
@@ -1914,7 +1972,7 @@ def update_dials(_):
             [
                 html.Span(label, className=f"dial-state {_state_class(label)}"),
                 html.Span(
-                    f"NIFTY OI PCR {pcr:.2f} • PE {pe_txt} • CE {ce_txt}",
+                    f"PCR {pcr:.2f} • PE {pe_txt} • CE {ce_txt}",
                     className="dial-meta",
                 ),
             ],
@@ -1925,7 +1983,7 @@ def update_dials(_):
         pcr_sub = html.Span(
             [
                 html.Span("LOADING", className="dial-state state-neutral"),
-                html.Span("NIFTY OI PCR", className="dial-meta"),
+                html.Span("PCR", className="dial-meta"),
             ],
             className="dial-sub-inner",
         )

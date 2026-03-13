@@ -3104,3 +3104,167 @@ td:first-child { text-align: left; }
   text-decoration: underline;
 }
 
+/* === Dynamic 0-line sector histogram === */
+.sector-hist-plot{
+  position: relative;
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
+}
+
+/* Left axis */
+.sector-hist-axis{
+  position: relative;
+  width: var(--axisW, 68px);
+  flex: 0 0 var(--axisW, 68px);
+}
+
+.sector-axis-tick{
+  position: absolute;
+  left: 0;
+  transform: translateY(-50%);
+  opacity: 0.75;
+  font-weight: 600;
+}
+
+/* One global 0-line across the whole plot area (like your screenshot) */
+.sector-hist-zero-line{
+  position: absolute;
+  left: var(--axisW, 68px);
+  right: 0;
+  top: var(--zero, 50%);
+  height: 2px;
+  background: rgba(255,255,255,0.12);
+  pointer-events: none;
+}
+
+/* Each sector track */
+.sector-hist-track{
+  position: relative;
+}
+
+/* Bars are anchored to the dynamic baseline */
+.sector-hist-bar{
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  border-radius: 14px;
+}
+
+/* baseline from TOP is --zero, so:
+   - positive bars: bottom should sit on the baseline
+   - negative bars: top should sit on the baseline
+*/
+.sector-hist-bar.pos{
+  bottom: calc(100% - var(--zero, 50%));
+}
+
+.sector-hist-bar.neg{
+  top: var(--zero, 50%);
+}
+
+/* each sector column = bar + name below */
+.sector-hist-col{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* keep the bar area fixed height */
+.sector-hist-track{
+  width: 50px;              /* adjust if needed */
+  position: relative;
+  margin-bottom: 10px;      /* gap before sector name */
+}
+
+/* sector label always at bottom */
+.sector-hist-name{
+  font-weight: 700;
+  letter-spacing: 1px;
+  opacity: 0.65;
+  text-align: center;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
+/* ================================
+   SECTOR HISTOGRAM — HIDE 0 LINE + LEFT NUMBERS
+   ================================ */
+
+/* remove left axis numbers */
+.sector-hist-axis{
+  display: none !important;
+}
+
+/* remove the global 0 reference line */
+.sector-hist-zero-line{
+  display: none !important;
+}
+
+/* if any older per-track midline exists, hide it too */
+.sector-hist-track::after{
+  display: none !important;
+}
+
+/* remove any extra left padding/gap caused by axis */
+.sector-hist-plot{
+  padding-left: 0 !important;
+}
+.sector-bars-wrap{
+  padding-left: 60px !important;
+}
+
+/* Bigger histogram */
+.sector-hist-track{ width: 60px !important; }
+.sector-hist-plot{ gap: 16px !important; }
+.sector-hist-name{ font-size: 12px !important; }
+
+/* ULTRA PREMIUM histogram colors (green/red) */
+.sector-hist-bar{
+  overflow: hidden !important;
+  filter: saturate(1.35) contrast(1.15) brightness(1.05) !important;
+}
+
+/* glossy moving sheen */
+.sector-hist-bar::after{
+  content:"";
+  position:absolute;
+  inset:-40% -60%;
+  background: linear-gradient(120deg,
+    transparent 42%,
+    rgba(255,255,255,0.22) 50%,
+    transparent 58%);
+  transform: rotate(10deg);
+  animation: histSheen 6.5s linear infinite;
+  pointer-events:none;
+  opacity: 0.55;
+}
+@keyframes histSheen{
+  0%{ transform: translateX(-35%) rotate(10deg); }
+  100%{ transform: translateX(35%) rotate(10deg); }
+}
+
+/* neon emerald */
+.sector-hist-bar.pos{
+  background: linear-gradient(180deg,
+    rgba(0, 255, 170, 0.98),
+    rgba(0, 210, 120, 0.55) 55%,
+    rgba(0, 160, 92, 0.22)
+  ) !important;
+  box-shadow:
+    0 18px 44px rgba(0,255,170,0.18),
+    0 8px 22px rgba(0,0,0,0.55) !important;
+}
+
+/* neon crimson */
+.sector-hist-bar.neg{
+  background: linear-gradient(180deg,
+    rgba(255, 80, 110, 0.22),
+    rgba(255, 35, 70, 0.70) 55%,
+    rgba(255, 0, 35, 0.98)
+  ) !important;
+  box-shadow:
+    0 18px 44px rgba(255,0,35,0.16),
+    0 8px 22px rgba(0,0,0,0.55) !important;
+}
+
