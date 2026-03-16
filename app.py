@@ -1,9 +1,12 @@
 # app.py  (NO AUTH • NO FIREBASE • NO SUBSCRIPTIONS)
 #
-# Run:
+# Run (local):
 #   export KITE_API_KEY="..."
 #   export KITE_ACCESS_TOKEN="..."
 #   uvicorn app:app --reload --workers 1
+#
+# Render:
+#   Start command: uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1
 
 import os
 import time
@@ -22,7 +25,7 @@ from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from starlette.middleware.wsgi import WSGIMiddleware
 
 import dash
-from dash import dcc, html, Input, Output
+from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import dash_ag_grid as dag
 
@@ -57,7 +60,6 @@ LOOKBACK_SESSIONS = 20
 HOT_WINDOW_SEC = 5 * 60
 HOT_SAMPLE_SEC = 5
 HOT_HISTORY_MAX_SEC = HOT_WINDOW_SEC + 10 * 60
-HOT_LAST_5M_KEY: Optional[str] = None
 
 # Hot Now filters
 HOT_MIN_RET_PCT = float(os.getenv("HOT_MIN_RET_PCT", "0.25"))       # min |spike%| to include
@@ -71,6 +73,12 @@ PCR_STRIKES_AROUND_ATM = int(os.getenv("PCR_STRIKES_AROUND_ATM", "12"))
 PCR_CACHE_TTL_SEC = int(os.getenv("PCR_CACHE_TTL_SEC", "20"))
 PCR_QUOTE_CHUNK = int(os.getenv("PCR_QUOTE_CHUNK", "180"))
 NIFTY_SPOT_SYMBOL = os.getenv("NIFTY_SPOT_SYMBOL", "NSE:NIFTY 50")
+
+# Background compute cadence (ultra-fast mode)
+COMPUTE_CORE_EVERY_SEC = float(os.getenv("COMPUTE_CORE_EVERY_SEC", "2.0"))   # sector agg, leaderboards, sentiment
+COMPUTE_HOT_EVERY_SEC = float(os.getenv("COMPUTE_HOT_EVERY_SEC", "5.0"))     # hot-now lists
+COMPUTE_PCR_EVERY_SEC = float(os.getenv("COMPUTE_PCR_EVERY_SEC", "5.0"))     # will still respect internal PCR cache
+COMPUTE_SLEEP_SEC = float(os.getenv("COMPUTE_SLEEP_SEC", "0.20"))            # loop sleep
 
 
 # =============================================================================
@@ -213,7 +221,7 @@ TOKENS = sorted(symbol_to_token.values())
 
 
 # =============================================================================
-# LIVE / STATE
+# LIVE / STATE (tick thread writes these)
 # =============================================================================
 LOCK = threading.Lock()
 
@@ -228,7 +236,7 @@ TOTAL_TICKS = 0
 TPS_WINDOW_SEC = 1.0
 TPS_BUCKETS = deque()
 
-HOT_HISTORY: Dict[int, deque] = {}
+HOT_HISTORY: Dict[int, deque] = {}  # token -> deque[(epoch, ltp, cumvol)]
 
 EOD_SNAPSHOT: Dict[int, Dict[str, Any]] = {}
 DAILY_STATS: Dict[int, Dict[str, Optional[float]]] = {}
@@ -273,6 +281,7 @@ def _hot_history_push(token: int, epoch: float, ltp: float, cumvol: Optional[flo
         dq = deque()
         HOT_HISTORY[token] = dq
 
+    # sample at HOT_SAMPLE_SEC cadence
     if dq and (epoch - dq[-1][0]) < HOT_SAMPLE_SEC:
         last_epoch, _, last_vol = dq[-1]
         dq[-1] = (last_epoch, float(ltp), float(cumvol) if cumvol is not None else last_vol)
@@ -390,27 +399,6 @@ def seed_daily_stats_once(per_req_sleep: float = SEED_SLEEP_SEC):
         DAILY_SEED_DONE = True
 
     threading.Thread(target=_run, daemon=True).start()
-
-
-def get_live_or_eod_state(token: int) -> Optional[Tuple[float, float, dict]]:
-    ltp = LAST_PRICE.get(token)
-    vol_today = DAY_VOL.get(token)
-    ohlc = LAST_OHLC.get(token) or {}
-
-    if (
-        ltp is not None
-        and vol_today is not None
-        and ohlc.get("open") is not None
-        and ohlc.get("close") is not None
-    ):
-        return float(ltp), float(vol_today), ohlc
-
-    e = EOD_SNAPSHOT.get(token)
-    if not e or e.get("prev_close") is None:
-        return None
-
-    ohlc_eod = {"open": e["open"], "high": e["high"], "low": e["low"], "close": e["prev_close"]}
-    return float(e["close"]), float(e["volume"]), ohlc_eod
 
 
 # =============================================================================
@@ -551,8 +539,66 @@ def pcr_label_from_value(pcr: float) -> str:
 
 
 # =============================================================================
-# RFACTOR / HOTNOW / SECTORS
+# SNAPSHOTS + ULTRA-FAST BACKGROUND COMPUTE CACHE
 # =============================================================================
+CACHE_LOCK = threading.Lock()
+CACHE: Dict[str, Any] = {
+    "sector_agg": {},
+    "top15_gainers": [],
+    "top15_losers": [],
+    "hvhr_gainers": [],
+    "hvhr_losers": [],
+    "hot_gainers": [],
+    "hot_losers": [],
+    "sentiment": {"adv": 0, "dec": 0, "unch": 0, "total": 0, "score": 0.0, "label": "NEUTRAL"},
+    "pcr": None,
+    "updated": {
+        "core": 0.0,
+        "hot": 0.0,
+        "pcr": 0.0,
+    },
+}
+
+
+def _snapshot_state(include_hot: bool = False) -> Dict[str, Any]:
+    """
+    Copy required state under LOCK, then compute outside lock.
+    """
+    with LOCK:
+        snap = {
+            "price": dict(LAST_PRICE),
+            "vol": dict(DAY_VOL),
+            "ohlc": dict(LAST_OHLC),
+            "eod": dict(EOD_SNAPSHOT),
+            "daily": dict(DAILY_STATS),
+            "tokens": list(TOKENS),
+        }
+        if include_hot:
+            snap["hot"] = {tok: list(dq) for tok, dq in HOT_HISTORY.items()}
+    return snap
+
+
+def _get_live_or_eod_state_from_snap(token: int, snap: Dict[str, Any]) -> Optional[Tuple[float, float, dict]]:
+    ltp = snap["price"].get(token)
+    vol_today = snap["vol"].get(token)
+    ohlc = snap["ohlc"].get(token) or {}
+
+    if (
+        ltp is not None
+        and vol_today is not None
+        and ohlc.get("open") is not None
+        and ohlc.get("close") is not None
+    ):
+        return float(ltp), float(vol_today), ohlc
+
+    e = (snap.get("eod") or {}).get(token)
+    if not e or e.get("prev_close") is None:
+        return None
+
+    ohlc_eod = {"open": e["open"], "high": e["high"], "low": e["low"], "close": e["prev_close"]}
+    return float(e["close"]), float(e["volume"]), ohlc_eod
+
+
 def _time_factor_ist_for_rvol(now_ist: Optional[datetime] = None) -> float:
     now_ist = now_ist or datetime.now(IST)
     m_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
@@ -570,8 +616,8 @@ def _time_factor_ist_for_rvol(now_ist: Optional[datetime] = None) -> float:
     return max(0.01, min(1.0, tf))
 
 
-def compute_rfactor_row_for_token(token: int):
-    state_ = get_live_or_eod_state(token)
+def _compute_rfactor_row_snap(token: int, snap: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    state_ = _get_live_or_eod_state_from_snap(token, snap)
     if not state_:
         return None
 
@@ -593,7 +639,7 @@ def compute_rfactor_row_for_token(token: int):
     pct_open = ((ltp - day_open) / day_open) * 100.0
     range_today = (float(day_high) - float(day_low)) if (day_high is not None and day_low is not None) else 0.0
 
-    st = DAILY_STATS.get(token) or {}
+    st = (snap.get("daily") or {}).get(token) or {}
     avg_vol_20 = st.get("avg_vol_20")
     avg_range_20 = st.get("avg_range_20")
     avg_abs_oc_ret_20 = st.get("avg_abs_oc_ret_20")
@@ -609,8 +655,8 @@ def compute_rfactor_row_for_token(token: int):
     dirr = (1.0 if pct_open >= 0 else -1.0) * rfactor_val
 
     return {
-        "gap_pct": gap_pct,
-        "pct_open": pct_open,
+        "gap_pct": float(gap_pct),
+        "pct_open": float(pct_open),
         "rfactor": float(rfactor_val),
         "dirr": float(dirr),
         "ltp": float(ltp),
@@ -619,240 +665,61 @@ def compute_rfactor_row_for_token(token: int):
     }
 
 
-def _compute_hot_row_for_token(token: int):
-    dq = HOT_HISTORY.get(token)
-    if not dq or len(dq) < 2:
-        return None
-
-    now_epoch = float(dq[-1][0])
-    cutoff = now_epoch - float(HOT_WINDOW_SEC)
-
-    base = None
-    for t, p, v in dq:
-        if float(t) <= cutoff:
-            base = (float(t), p, v)
-        else:
-            break
-    if base is None:
-        base = (float(dq[0][0]), dq[0][1], dq[0][2])
-
-    base_t, base_p, base_v = base
-    _, last_p, last_v = dq[-1]
-
-    if base_p is None or float(base_p) <= 0 or last_p is None:
-        return None
-
-    win = [(float(t), p, v) for (t, p, v) in dq if float(t) >= base_t]
-    prices = [float(p) for _, p, _ in win if p is not None]
-    if len(prices) < 2:
-        return None
-
-    lo = float(min(prices))
-    hi = float(max(prices))
-    rng = float(hi - lo)
-
-    base_pf = float(base_p)
-    range_pct = (rng / (base_pf + 1e-9)) * 100.0
-
-    up_spike_pct = (hi - base_pf) / (base_pf + 1e-9) * 100.0
-    down_spike_pct = (lo - base_pf) / (base_pf + 1e-9) * 100.0
-    spike_pct = up_spike_pct if abs(up_spike_pct) >= abs(down_spike_pct) else down_spike_pct
-
-    vol_win = None
-    if base_v is not None and last_v is not None:
-        vol_win = float(last_v) - float(base_v)
-        if vol_win < 0:
-            vol_win = None
-
-    return {"range_pct": float(range_pct), "spike_pct": float(spike_pct), "vol_win": vol_win}
-
-
-def top_gainers_losers_rfactor_rows(n: int = 15):
-    rows = []
-    for sym in ALL_SYMBOLS:
-        tok = symbol_to_token.get(sym)
-        if not tok:
+def _compute_market_sentiment_proxy_snap(snap: Dict[str, Any]) -> Dict[str, Any]:
+    adv = dec = unch = 0
+    for tok in snap.get("tokens") or []:
+        st = _get_live_or_eod_state_from_snap(tok, snap)
+        if not st:
             continue
-        rr = compute_rfactor_row_for_token(tok)
-        if not rr:
+        ltp, _, ohlc = st
+        op = ohlc.get("open")
+        if op is None:
             continue
-        rows.append({
-            "Symbol": sym,
-            "%Change": round(float(rr["pct_open"]), 2),
-            "RFactor": round(float(rr["rfactor"]), 2),
-            "Vol": int(rr["vol_today"]),
-        })
-
-    if not rows:
-        return [], []
-
-    df = pd.DataFrame(rows)
-    gainers = df[df["%Change"] > 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
-    losers = df[df["%Change"] < 0].sort_values("RFactor", ascending=False).head(n).to_dict("records")
-    return gainers, losers
-
-
-def high_vol_high_rfactor_gainers_losers(n: int = HVHR_N, rfactor_quantile: float = HVHR_RFACTOR_Q):
-    rows = []
-    for sym in ALL_SYMBOLS:
-        tok = symbol_to_token.get(sym)
-        if not tok:
-            continue
-        rr = compute_rfactor_row_for_token(tok)
-        if not rr:
-            continue
-        rows.append({
-            "Symbol": sym,
-            "%Change": round(float(rr["pct_open"]), 2),
-            "RFactor": round(float(rr["rfactor"]), 2),
-            "Vol": int(rr["vol_today"]),
-        })
-
-    if not rows:
-        return [], []
-
-    df = pd.DataFrame(rows).dropna(subset=["RFactor", "Vol", "%Change"])
-    if df.empty:
-        return [], []
-
-    q = min(max(float(rfactor_quantile), 0.0), 1.0)
-    thr = float(df["RFactor"].quantile(q)) if len(df) >= 3 else float(df["RFactor"].min())
-    df = df[df["RFactor"] >= thr]
-
-    gainers = (
-        df[df["%Change"] > 0]
-        .sort_values(["Vol", "RFactor"], ascending=[False, False])
-        .head(int(n))
-        .to_dict("records")
-    )
-    losers = (
-        df[df["%Change"] < 0]
-        .sort_values(["Vol", "RFactor"], ascending=[False, False])
-        .head(int(n))
-        .to_dict("records")
-    )
-    return gainers, losers
-
-
-def top_hot_now_rows(n: int = 15):
-    rows = []
-    min_spike = float(HOT_MIN_RET_PCT)
-    min_rng = float(HOT_MIN_RANGE_PCT)
-
-    for sym in ALL_SYMBOLS:
-        tok = symbol_to_token.get(sym)
-        if not tok:
-            continue
-
-        hr = _compute_hot_row_for_token(tok)
-        if not hr:
-            continue
-
-        spike = float(hr["spike_pct"])
-        range_pct = float(hr["range_pct"])
-
-        if abs(spike) < min_spike:
-            continue
-        if range_pct < min_rng:
-            continue
-
-        rows.append({
-            "Symbol": sym,
-            "_spike": spike,
-            "_abs_spike": abs(spike),
-            "SPIKE%": round(spike, 2),
-            "RNG5%": round(range_pct, 2),
-            "DAY RNG%": None,
-        })
-
-    if not rows:
-        return [], []
-
-    df = pd.DataFrame(rows).dropna(subset=["SPIKE%", "RNG5%"])
-    if df.empty:
-        return [], []
-
-    gainers = (
-        df[df["_spike"] > 0]
-        .sort_values(["_abs_spike", "RNG5%"], ascending=[False, False])
-        .head(n)[["Symbol", "SPIKE%", "RNG5%", "DAY RNG%"]]
-        .to_dict("records")
-    )
-    losers = (
-        df[df["_spike"] < 0]
-        .sort_values(["_abs_spike", "RNG5%"], ascending=[False, False])
-        .head(n)[["Symbol", "SPIKE%", "RNG5%", "DAY RNG%"]]
-        .to_dict("records")
-    )
-    return gainers, losers
-
-
-def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
-    """
-    Returns rows with keys:
-      Symbol, Company, DirR, Price, %Change, Gap%, RVOLm, RFactor
-    """
-    rows = []
-    tf = _time_factor_ist_for_rvol(datetime.now(IST))
-
-    for s in SECTOR_DEFINITIONS.get(sector, []):
-        tok = symbol_to_token.get(s)
-        if not tok:
-            continue
-
-        rr = compute_rfactor_row_for_token(tok)
-        if not rr:
-            continue
-
-        pct_open = float(rr["pct_open"])
-        gap_pct = float(rr["gap_pct"])
-        ltp = float(rr["ltp"])
-
-        st = DAILY_STATS.get(tok) or {}
-        avg_vol_20 = st.get("avg_vol_20")
-        vol_today = rr.get("vol_today")
-
-        rvolm = None
         try:
-            if avg_vol_20 and vol_today is not None and float(avg_vol_20) > 0:
-                expected = float(avg_vol_20) * float(tf)
-                rvolm = float(vol_today) / (expected + 1e-9)
+            opf = float(op)
+            ltp = float(ltp)
         except Exception:
-            rvolm = None
+            continue
+        if opf <= 0 or ltp <= 0:
+            continue
+        pct_open = (ltp - opf) / opf * 100.0
+        if pct_open > 0:
+            adv += 1
+        elif pct_open < 0:
+            dec += 1
+        else:
+            unch += 1
 
-        rows.append({
-            "Symbol": s,
-            "Company": symbol_to_name.get(s, ""),
-            "DirR": float(rr["dirr"]),
-            "Price": ltp,
-            "%Change": pct_open,
-            "Gap%": gap_pct,
-            "RVOLm": rvolm,
-            "RFactor": float(rr["rfactor"]),
-        })
+    total = adv + dec + unch
+    score = (adv - dec) / total if total > 0 else 0.0
 
-    if not rows:
-        return []
-
-    sb = (sort_by or "").strip().upper()
-    if sb in ("RVOL", "RVOLM"):
-        key = "RVOLm"
-    elif sb in ("DIRR", "DIR R"):
-        key = "DirR"
-    elif sb in ("%CHANGE", "%CHG", "CHG"):
-        key = "%Change"
+    if score >= 0.20:
+        label = "BULLISH"
+    elif score <= -0.20:
+        label = "BEARISH"
     else:
-        key = "RFactor"
+        label = "NEUTRAL"
 
-    def sort_val(x):
-        v = x.get(key)
-        return float(v) if v is not None else float("-inf")
-
-    rows.sort(key=sort_val, reverse=True)
-    return rows
+    return {"adv": adv, "dec": dec, "unch": unch, "total": total, "score": float(score), "label": label}
 
 
-def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
+def _compute_sector_aggregates_from_rr(rr_by_tok: Dict[int, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
+    tf = _time_factor_ist_for_rvol(datetime.now(IST))
+    out: Dict[str, Dict[str, float]] = {}
+
+    # For RVOLm metrics we need avg_vol_20; we will grab it from DAILY_STATS global snapshot
+    # but rr_by_tok doesn't include avg_vol_20. We can compute RVOLm from rr + daily stats snapshot
+    snap_daily = None
+    # NOTE: we intentionally read DAILY_STATS without LOCK here because this function is called
+    # from compute thread after snapshot; so pass in daily map when calling.
+    # (we will inject via closure in compute loop)
+    raise RuntimeError("internal: call _compute_sector_aggregates_from_rr_with_daily() instead")
+
+
+def _compute_sector_aggregates_from_rr_with_daily(
+    rr_by_tok: Dict[int, Dict[str, float]],
+    daily_map: Dict[int, Dict[str, Optional[float]]],
+) -> Dict[str, Dict[str, float]]:
     """
     Sector bars metrics:
       DirR = signed mean(DirR)
@@ -875,13 +742,13 @@ def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
             if not tok:
                 continue
 
-            rr = compute_rfactor_row_for_token(tok)
+            rr = rr_by_tok.get(tok)
             if not rr:
                 continue
 
             dirr_vals.append(float(rr["dirr"]))
 
-            st = DAILY_STATS.get(tok) or {}
+            st = daily_map.get(tok) or {}
             avg_vol_20 = st.get("avg_vol_20")
             vol_today = rr.get("vol_today")
             pct_open = rr.get("pct_open")
@@ -905,7 +772,7 @@ def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
                 continue
 
         n_total = buy_n + sell_n
-        dirr_mean = float(pd.Series(dirr_vals).mean()) if dirr_vals else 0.0
+        dirr_mean = (sum(dirr_vals) / len(dirr_vals)) if dirr_vals else 0.0
 
         net_sum = float(buy_sum - sell_sum)
         gross_sum = float(buy_sum + sell_sum)
@@ -929,45 +796,230 @@ def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
     return out
 
 
-def compute_market_sentiment_proxy():
-    adv = dec = unch = 0
-    for tok in TOKENS:
-        state_ = get_live_or_eod_state(tok)
-        if not state_:
-            continue
-        ltp, _, ohlc = state_
-        op = ohlc.get("open")
-        if op is None:
-            continue
+def _quantile_threshold(values: List[float], q: float) -> Optional[float]:
+    if not values:
+        return None
+    q = min(max(float(q), 0.0), 1.0)
+    vs = sorted(values)
+    if len(vs) == 1:
+        return float(vs[0])
+    idx = int(round(q * (len(vs) - 1)))
+    idx = min(max(idx, 0), len(vs) - 1)
+    return float(vs[idx])
 
-        try:
-            opf = float(op)
-            ltp = float(ltp)
-        except Exception:
-            continue
 
-        if opf <= 0 or ltp <= 0:
-            continue
+def _compute_hot_row_from_series(series: List[Tuple[float, float, Optional[float]]]) -> Optional[dict]:
+    """
+    series: list[(epoch, ltp, cumvol)]
+    """
+    if not series or len(series) < 2:
+        return None
 
-        pct_open = (ltp - opf) / opf * 100.0
-        if pct_open > 0:
-            adv += 1
-        elif pct_open < 0:
-            dec += 1
+    now_epoch = float(series[-1][0])
+    cutoff = now_epoch - float(HOT_WINDOW_SEC)
+
+    base = None
+    for t, p, v in series:
+        if float(t) <= cutoff:
+            base = (float(t), p, v)
         else:
-            unch += 1
+            break
+    if base is None:
+        base = (float(series[0][0]), series[0][1], series[0][2])
 
-    total = adv + dec + unch
-    score = (adv - dec) / total if total > 0 else 0.0
+    base_t, base_p, base_v = base
+    _, last_p, last_v = series[-1]
 
-    if score >= 0.20:
-        label = "BULLISH"
-    elif score <= -0.20:
-        label = "BEARISH"
-    else:
-        label = "NEUTRAL"
+    if base_p is None or float(base_p) <= 0 or last_p is None:
+        return None
 
-    return {"adv": adv, "dec": dec, "unch": unch, "total": total, "score": float(score), "label": label}
+    prices = [float(p) for (t, p, _v) in series if float(t) >= base_t and p is not None]
+    if len(prices) < 2:
+        return None
+
+    lo = float(min(prices))
+    hi = float(max(prices))
+    rng = float(hi - lo)
+
+    base_pf = float(base_p)
+    range_pct = (rng / (base_pf + 1e-9)) * 100.0
+
+    up_spike_pct = (hi - base_pf) / (base_pf + 1e-9) * 100.0
+    down_spike_pct = (lo - base_pf) / (base_pf + 1e-9) * 100.0
+    spike_pct = up_spike_pct if abs(up_spike_pct) >= abs(down_spike_pct) else down_spike_pct
+
+    vol_win = None
+    if base_v is not None and last_v is not None:
+        vol_win = float(last_v) - float(base_v)
+        if vol_win < 0:
+            vol_win = None
+
+    return {"range_pct": float(range_pct), "spike_pct": float(spike_pct), "vol_win": vol_win}
+
+
+_compute_started = False
+
+
+def start_compute_loop_once():
+    """
+    Ultra-fast mode: precompute sector aggregates + leaderboards in background thread.
+    Dash callbacks become cheap dictionary reads.
+    """
+    global _compute_started
+    if _compute_started:
+        return
+    _compute_started = True
+
+    def _run():
+        last_core = 0.0
+        last_hot = 0.0
+        last_pcr = 0.0
+
+        while True:
+            now = time.time()
+
+            # ---- CORE (rfactor rows -> leaderboards + sector aggregates + sentiment) ----
+            if (now - last_core) >= COMPUTE_CORE_EVERY_SEC:
+                try:
+                    snap = _snapshot_state(include_hot=False)
+
+                    rr_by_tok: Dict[int, Dict[str, float]] = {}
+                    rows_basic: List[dict] = []
+                    rfactor_vals: List[float] = []
+
+                    for sym in ALL_SYMBOLS:
+                        tok = symbol_to_token.get(sym)
+                        if not tok:
+                            continue
+                        rr = _compute_rfactor_row_snap(tok, snap)
+                        if not rr:
+                            continue
+
+                        rr_by_tok[tok] = rr
+                        rows_basic.append({
+                            "Symbol": sym,
+                            "%Change": round(float(rr["pct_open"]), 2),
+                            "RFactor": round(float(rr["rfactor"]), 2),
+                            "Vol": int(rr["vol_today"]),
+                        })
+                        rfactor_vals.append(float(rr["rfactor"]))
+
+                    # Top gainers/losers by RFactor
+                    gainers = [r for r in rows_basic if float(r["%Change"]) > 0]
+                    losers = [r for r in rows_basic if float(r["%Change"]) < 0]
+                    gainers.sort(key=lambda r: float(r["RFactor"]), reverse=True)
+                    losers.sort(key=lambda r: float(r["RFactor"]), reverse=True)
+                    top15_gainers = gainers[:15]
+                    top15_losers = losers[:15]
+
+                    # HVHR (top quantile by RFactor, then sort by Vol)
+                    thr = _quantile_threshold(rfactor_vals, float(HVHR_RFACTOR_Q)) if rfactor_vals else None
+                    if thr is None:
+                        hvhr_gainers, hvhr_losers = [], []
+                    else:
+                        bucket = [r for r in rows_basic if float(r["RFactor"]) >= float(thr)]
+                        bucket_g = [r for r in bucket if float(r["%Change"]) > 0]
+                        bucket_l = [r for r in bucket if float(r["%Change"]) < 0]
+                        bucket_g.sort(key=lambda r: (int(r["Vol"]), float(r["RFactor"])), reverse=True)
+                        bucket_l.sort(key=lambda r: (int(r["Vol"]), float(r["RFactor"])), reverse=True)
+                        hvhr_gainers = bucket_g[: int(HVHR_N)]
+                        hvhr_losers = bucket_l[: int(HVHR_N)]
+
+                    # Sector aggregates
+                    sector_agg = _compute_sector_aggregates_from_rr_with_daily(
+                        rr_by_tok=rr_by_tok,
+                        daily_map=(snap.get("daily") or {}),
+                    )
+
+                    # Sentiment
+                    sentiment = _compute_market_sentiment_proxy_snap(snap)
+
+                    with CACHE_LOCK:
+                        CACHE["sector_agg"] = sector_agg
+                        CACHE["top15_gainers"] = top15_gainers
+                        CACHE["top15_losers"] = top15_losers
+                        CACHE["hvhr_gainers"] = hvhr_gainers
+                        CACHE["hvhr_losers"] = hvhr_losers
+                        CACHE["sentiment"] = sentiment
+                        CACHE["updated"]["core"] = now
+
+                except Exception:
+                    log.exception("compute loop: CORE crashed")
+
+                last_core = now
+
+            # ---- HOT NOW ----
+            if (now - last_hot) >= COMPUTE_HOT_EVERY_SEC:
+                try:
+                    snap = _snapshot_state(include_hot=True)
+                    hot = snap.get("hot") or {}
+
+                    rows = []
+                    min_spike = float(HOT_MIN_RET_PCT)
+                    min_rng = float(HOT_MIN_RANGE_PCT)
+
+                    for sym in ALL_SYMBOLS:
+                        tok = symbol_to_token.get(sym)
+                        if not tok:
+                            continue
+                        series = hot.get(tok)
+                        if not series:
+                            continue
+
+                        hr = _compute_hot_row_from_series(series)
+                        if not hr:
+                            continue
+
+                        spike = float(hr["spike_pct"])
+                        range_pct = float(hr["range_pct"])
+
+                        if abs(spike) < min_spike:
+                            continue
+                        if range_pct < min_rng:
+                            continue
+
+                        rows.append({
+                            "Symbol": sym,
+                            "_spike": spike,
+                            "_abs_spike": abs(spike),
+                            "SPIKE%": round(spike, 2),
+                            "RNG5%": round(range_pct, 2),
+                            "DAY RNG%": None,
+                        })
+
+                    gain = [r for r in rows if float(r["_spike"]) > 0]
+                    loss = [r for r in rows if float(r["_spike"]) < 0]
+                    gain.sort(key=lambda r: (float(r["_abs_spike"]), float(r["RNG5%"])), reverse=True)
+                    loss.sort(key=lambda r: (float(r["_abs_spike"]), float(r["RNG5%"])), reverse=True)
+
+                    hot_gainers = [{k: v for k, v in r.items() if not k.startswith("_")} for r in gain[:15]]
+                    hot_losers = [{k: v for k, v in r.items() if not k.startswith("_")} for r in loss[:15]]
+
+                    with CACHE_LOCK:
+                        CACHE["hot_gainers"] = hot_gainers
+                        CACHE["hot_losers"] = hot_losers
+                        CACHE["updated"]["hot"] = now
+
+                except Exception:
+                    log.exception("compute loop: HOT crashed")
+
+                last_hot = now
+
+            # ---- PCR ----
+            if (now - last_pcr) >= COMPUTE_PCR_EVERY_SEC:
+                try:
+                    p = compute_real_nifty_oi_pcr(strikes_around_atm=PCR_STRIKES_AROUND_ATM)
+                    with CACHE_LOCK:
+                        CACHE["pcr"] = p
+                        CACHE["updated"]["pcr"] = now
+                except Exception:
+                    log.exception("compute loop: PCR crashed")
+
+                last_pcr = now
+
+            time.sleep(COMPUTE_SLEEP_SEC)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 # =============================================================================
@@ -1173,11 +1225,9 @@ def sector_modal_component():
         "getRowId": {"function": "params.data.Symbol"},
         "alwaysShowVerticalScroll": True,
         "animateRows": True,
-
         # show ONLY funnel icon, hide hamburger menu
         "suppressHeaderMenuButton": True,
         "suppressHeaderFilterButton": False,
-
         "onGridReady": {"function": "params.api.sizeColumnsToFit();"},
         "onGridSizeChanged": {"function": "params.api.sizeColumnsToFit();"},
     }
@@ -1185,12 +1235,16 @@ def sector_modal_component():
     header = html.Div(
         [
             html.Div(id="sector-modal-title", children="SECTOR", className="tt-modal-title"),
-            dbc.Button(
-                "Close",
-                id="sector-modal-close",
-                color="secondary",
-                outline=True,
-                className="tt-modal-close-btn",
+            # client-side close (instant, no server callback)
+            dcc.Link(
+                dbc.Button(
+                    "Close",
+                    color="secondary",
+                    outline=True,
+                    className="tt-modal-close-btn",
+                ),
+                href=BASE,
+                refresh=False,
             ),
         ],
         className="tt-modal-header",
@@ -1222,12 +1276,11 @@ def sector_modal_component():
         scrollable=True,
         backdrop=True,
         keyboard=True,
-
-        # dbc 1.6.0 supports these (NOT dialogClassName)
         modalClassName="tt-modal",
         contentClassName="tt-modal-content",
         backdropClassName="tt-modal-backdrop",
     )
+
 
 # =============================================================================
 # PAGES
@@ -1439,8 +1492,9 @@ def sectors_page():
     )
 
 
-# --- Minimal VOLM page: Top15 BUY/SELL by RVOLm ---
+# --- Minimal VOLM page: Top15 BUY/SELL by RVOLm (computed on-demand; smaller page) ---
 def top15_buy_sell_rvolm_rows(n: int = 15):
+    snap = _snapshot_state(include_hot=False)
     tf = _time_factor_ist_for_rvol(datetime.now(IST))
     buy = []
     sell = []
@@ -1450,11 +1504,11 @@ def top15_buy_sell_rvolm_rows(n: int = 15):
         if not tok:
             continue
 
-        state_ = get_live_or_eod_state(tok)
-        if not state_:
+        st = _get_live_or_eod_state_from_snap(tok, snap)
+        if not st:
             continue
 
-        ltp, vol_today, ohlc = state_
+        ltp, vol_today, ohlc = st
         op = (ohlc or {}).get("open")
         if op is None:
             continue
@@ -1469,8 +1523,8 @@ def top15_buy_sell_rvolm_rows(n: int = 15):
         if op <= 0:
             continue
 
-        st = DAILY_STATS.get(tok) or {}
-        avg_vol_20 = st.get("avg_vol_20")
+        st20 = (snap.get("daily") or {}).get(tok) or {}
+        avg_vol_20 = st20.get("avg_vol_20")
         try:
             avg_vol_20 = float(avg_vol_20) if avg_vol_20 is not None else None
         except Exception:
@@ -1584,12 +1638,16 @@ def volm_page():
 
 
 # =============================================================================
-# DASH ROOT LAYOUT (modal lives here so callbacks always have components)
+# DASH ROOT LAYOUT (modal lives here)
 # =============================================================================
 dash_app.layout = dbc.Container(
     fluid=True,
     children=[
         dcc.Location(id="url"),
+
+        # IMPORTANT: prevents full sectors re-render when URL changes only for modal
+        dcc.Store(id="page-store"),
+
         dcc.Interval(id="top_refresh", interval=1000, n_intervals=0),
 
         html.Div(
@@ -1609,29 +1667,43 @@ dash_app.layout = dbc.Container(
 
         html.Div(id="app-body"),
 
-        # Sector popup (opens when URL is /dash/sector/<SECTOR>)
         sector_modal_component(),
     ],
 )
 
 
 # =============================================================================
-# ROUTER (sector route returns SAME sectors page; modal opens via URL)
+# ROUTER (no rebuild between /dash/ and /dash/sector/<x>)
 # =============================================================================
-@dash_app.callback(Output("app-body", "children"), Input("url", "pathname"))
-def route(pathname):
+def _classify_page(pathname: str) -> str:
     pn = (pathname or "").strip() or "/"
 
-    # sectors home
-    if pn in ("/", "/dash", "/dash/", BASE):
-        return sectors_page()
+    # Support both "with prefix" and "internal" paths
+    volm_paths = {"/volm", "/volm/", f"{BASE}volm", f"{BASE}volm/"}
+    oi_paths = {"/openinterest", "/openinterest/", f"{BASE}openinterest", f"{BASE}openinterest/"}
 
-    # volm page
-    if pn in (f"{BASE}volm", f"{BASE}volm/"):
-        return volm_page()
+    if pn in volm_paths:
+        return "volm"
+    if pn in oi_paths:
+        return "openinterest"
+    return "sectors"
 
-    # openinterest iframe
-    if pn in (f"{BASE}openinterest", f"{BASE}openinterest/"):
+
+@dash_app.callback(
+    Output("app-body", "children"),
+    Output("page-store", "data"),
+    Input("url", "pathname"),
+    State("page-store", "data"),
+)
+def route(pathname, current_page):
+    page = _classify_page(pathname)
+    if current_page == page:
+        return dash.no_update, current_page
+
+    if page == "volm":
+        return volm_page(), "volm"
+
+    if page == "openinterest":
         return html.Iframe(
             src="/openinterest",
             style={
@@ -1640,14 +1712,9 @@ def route(pathname):
                 "border": "0",
                 "borderRadius": "16px",
             },
-        )
+        ), "openinterest"
 
-    # sector paths show sectors page + modal (NOT a full separate page)
-    sector = _extract_sector_from_path(pn)
-    if sector:
-        return sectors_page()
-
-    return sectors_page()
+    return sectors_page(), "sectors"
 
 
 # =============================================================================
@@ -1689,17 +1756,18 @@ def update_top_stats(_):
     with LOCK:
         offline = (time.time() - LAST_TICK_TS) > 10 if LAST_TICK_TS else True
         tot = TOTAL_TICKS
-        sm = compute_market_sentiment_proxy()
-
         d_done = DAILY_SEED_DONE
         d_done_n = int(DAILY_SEED_PROGRESS.get("done", 0) or 0)
         d_total = int(DAILY_SEED_PROGRESS.get("total", 0) or 0)
         d_err = int(DAILY_SEED_ERRORS or 0)
 
-    # ---- BIAS chip (include ADV/DEC counts) ----
+    with CACHE_LOCK:
+        sm = dict(CACHE.get("sentiment") or {})
+        pn = CACHE.get("pcr")
+
+    # ---- BIAS chip ----
     sent_label = str(sm.get("label") or "NEUTRAL").upper()
     sent_score = float(sm.get("score") or 0.0)
-
     adv = int(sm.get("adv", 0) or 0)
     dec = int(sm.get("dec", 0) or 0)
     unch = int(sm.get("unch", 0) or 0)
@@ -1719,7 +1787,6 @@ def update_top_stats(_):
     )
 
     # ---- PCR chip ----
-    pn = compute_real_nifty_oi_pcr(strikes_around_atm=PCR_STRIKES_AROUND_ATM)
     if pn and pn.get("pcr") is not None:
         pcr = float(pn["pcr"])
         pcr_lbl = pcr_label_from_value(pcr)
@@ -1754,7 +1821,6 @@ def update_top_stats(_):
         pcr_chip,
     ]
 
-    # DAILY seed badge while running
     if not d_done:
         chips.append(
             dbc.Badge(
@@ -1774,14 +1840,14 @@ def update_top_stats(_):
 
 
 # =============================================================================
-# SECTOR HISTOGRAM (still uses Links; now those Links open popup via URL)
+# SECTOR BARS (render only; data from CACHE)
 # =============================================================================
 @dash_app.callback(
     Output("sector-bars", "children"),
     Input("refresh_sectors", "n_intervals"),
     Input("sectors-sort", "value"),
 )
-def render_sector_bars(_, sort_by):
+def render_sector_bars(_n, sort_by):
     sort_by = (sort_by or "RVOLmMean").strip()
 
     try:
@@ -1792,8 +1858,8 @@ def render_sector_bars(_, sort_by):
         else:
             metric = "RVOLmNetSum"
 
-        with LOCK:
-            agg = compute_sector_aggregates()
+        with CACHE_LOCK:
+            agg = dict(CACHE.get("sector_agg") or {})
 
         items = sorted(
             agg.items(),
@@ -1812,7 +1878,6 @@ def render_sector_bars(_, sort_by):
 
         vmin = raw_min - pad
         vmax = raw_max + pad
-
         vmin = min(vmin, 0.0)
         vmax = max(vmax, 0.0)
 
@@ -1841,21 +1906,14 @@ def render_sector_bars(_, sort_by):
             return f"{x:.2f}"
 
         ticks = [tick_max, tick_max / 2.0, 0.0, tick_min / 2.0, tick_min]
-
         axis_ticks = []
         for tv in ticks:
             top_pct = ((tick_max - float(tv)) / axis_span) * 100.0
-            axis_ticks.append(
-                html.Div(fmt(tv), className="sector-axis-tick", style={"top": f"{top_pct:.2f}%"})
-            )
+            axis_ticks.append(html.Div(fmt(tv), className="sector-axis-tick", style={"top": f"{top_pct:.2f}%"}))
 
         axis = html.Div(axis_ticks, className="sector-hist-axis", style={"height": f"{plot_h}px"})
 
-        children = [
-            axis,
-            html.Div(className="sector-hist-zero-line"),
-        ]
-
+        children = [axis, html.Div(className="sector-hist-zero-line")]
         bar_min_px = 4.0
 
         for sector, m in items:
@@ -1873,11 +1931,11 @@ def render_sector_bars(_, sort_by):
             if 0 < bar_px < bar_min_px:
                 bar_px = bar_min_px
 
-            # NOTE: Link changes URL to /dash/sector/<sector> which opens modal (no full page)
             children.append(
                 dcc.Link(
                     href=f"{BASE}sector/{sector}",
                     className="sector-hist-link",
+                    refresh=False,
                     children=html.Div(
                         [
                             html.Div(
@@ -1913,36 +1971,88 @@ def render_sector_bars(_, sort_by):
 
 
 # =============================================================================
-# MODAL OPEN/CLOSE LOGIC
+# SECTOR MODAL (on-demand; small list -> ok)
 # =============================================================================
+def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
+    rows = []
+    tf = _time_factor_ist_for_rvol(datetime.now(IST))
+    snap = _snapshot_state(include_hot=False)
+
+    for s in SECTOR_DEFINITIONS.get(sector, []):
+        tok = symbol_to_token.get(s)
+        if not tok:
+            continue
+
+        rr = _compute_rfactor_row_snap(tok, snap)
+        if not rr:
+            continue
+
+        pct_open = float(rr["pct_open"])
+        gap_pct = float(rr["gap_pct"])
+        ltp = float(rr["ltp"])
+
+        st = (snap.get("daily") or {}).get(tok) or {}
+        avg_vol_20 = st.get("avg_vol_20")
+        vol_today = rr.get("vol_today")
+
+        rvolm = None
+        try:
+            if avg_vol_20 and vol_today is not None and float(avg_vol_20) > 0:
+                expected = float(avg_vol_20) * float(tf)
+                rvolm = float(vol_today) / (expected + 1e-9)
+        except Exception:
+            rvolm = None
+
+        rows.append({
+            "Symbol": s,
+            "Company": symbol_to_name.get(s, ""),
+            "DirR": float(rr["dirr"]),
+            "Price": ltp,
+            "%Change": pct_open,
+            "Gap%": gap_pct,
+            "RVOLm": rvolm,
+            "RFactor": float(rr["rfactor"]),
+        })
+
+    if not rows:
+        return []
+
+    sb = (sort_by or "").strip().upper()
+    if sb in ("RVOL", "RVOLM"):
+        key = "RVOLm"
+    elif sb in ("DIRR", "DIR R"):
+        key = "DirR"
+    elif sb in ("%CHANGE", "%CHG", "CHG"):
+        key = "%Change"
+    else:
+        key = "RFactor"
+
+    def sort_val(x):
+        v = x.get(key)
+        return float(v) if v is not None else float("-inf")
+
+    rows.sort(key=sort_val, reverse=True)
+    return rows
+
+
 @dash_app.callback(
     Output("sector-modal", "is_open"),
     Output("sector-modal-title", "children"),
     Output("sector-modal-grid", "rowData"),
     Input("url", "pathname"),
-    Input("top_refresh", "n_intervals"),  # refresh modal live while open
+    Input("top_refresh", "n_intervals"),
 )
 def sync_sector_modal(pathname, _tick):
     sector = _extract_sector_from_path(pathname)
     if sector and sector in SECTOR_DEFINITIONS:
-        with LOCK:
-            rows = sector_rows_sorted(sector, sort_by="RFactor")
+        rows = sector_rows_sorted(sector, sort_by="RFactor")
         title = sector.replace("_", " ").title()
         return True, title, rows
     return False, "Sector", []
 
 
-@dash_app.callback(
-    Output("url", "pathname"),
-    Input("sector-modal-close", "n_clicks"),
-    prevent_initial_call=True,
-)
-def close_sector_modal(_n):
-    return BASE
-
-
 # =============================================================================
-# OTHER DASH CALLBACKS
+# DIALS + LEADERBOARDS (read from CACHE only)
 # =============================================================================
 def _state_class(label: str) -> str:
     L = (label or "").upper().strip()
@@ -1986,23 +2096,22 @@ def _fmt_oi_compact(v: Optional[float]) -> str:
     Input("refresh_sectors", "n_intervals"),
 )
 def update_dials(_):
-    with LOCK:
-        sm = compute_market_sentiment_proxy()
+    with CACHE_LOCK:
+        sm = dict(CACHE.get("sentiment") or {})
+        pn = CACHE.get("pcr")
 
-    score = float(sm["score"])
+    score = float(sm.get("score") or 0.0)
     sent_angle = max(-90.0, min(90.0, score * 90.0))
     sent_style = {"--rot": f"{sent_angle:.2f}deg"}
 
-    sent_label = str(sm["label"])
+    sent_label = str(sm.get("label") or "NEUTRAL")
     sent_sub = html.Span(
         [
             html.Span(sent_label, className=f"dial-state {_state_class(sent_label)}"),
-            html.Span(f"{score:+.2f} • {sm['adv']} ↑ • {sm['dec']} ↓", className="dial-meta"),
+            html.Span(f"{score:+.2f} • {sm.get('adv',0)} ↑ • {sm.get('dec',0)} ↓", className="dial-meta"),
         ],
         className="dial-sub-inner",
     )
-
-    pn = compute_real_nifty_oi_pcr(strikes_around_atm=PCR_STRIKES_AROUND_ATM)
 
     if pn and pn.get("pcr") is not None:
         pcr = float(pn["pcr"])
@@ -2041,8 +2150,8 @@ def update_dials(_):
     Input("refresh_sectors", "n_intervals"),
 )
 def update_rfactor_leaderboards(_):
-    with LOCK:
-        return top_gainers_losers_rfactor_rows(n=15)
+    with CACHE_LOCK:
+        return list(CACHE.get("top15_gainers") or []), list(CACHE.get("top15_losers") or [])
 
 
 @dash_app.callback(
@@ -2051,8 +2160,8 @@ def update_rfactor_leaderboards(_):
     Input("refresh_sectors", "n_intervals"),
 )
 def update_hvhr(_):
-    with LOCK:
-        return high_vol_high_rfactor_gainers_losers(n=HVHR_N, rfactor_quantile=HVHR_RFACTOR_Q)
+    with CACHE_LOCK:
+        return list(CACHE.get("hvhr_gainers") or []), list(CACHE.get("hvhr_losers") or [])
 
 
 @dash_app.callback(
@@ -2061,26 +2170,8 @@ def update_hvhr(_):
     Input("refresh_sectors", "n_intervals"),
 )
 def update_hot_now(_):
-    global HOT_LAST_5M_KEY
-
-    now = datetime.now(IST)
-    bucket_min = (now.minute // 5) * 5
-    key = f"{now.date().isoformat()} {now.hour:02d}:{bucket_min:02d}"
-
-    if HOT_LAST_5M_KEY is None:
-        HOT_LAST_5M_KEY = key
-        with LOCK:
-            return top_hot_now_rows(n=15)
-
-    if (now.minute % 5) != 0 or now.second > 2:
-        return dash.no_update, dash.no_update
-
-    if key == HOT_LAST_5M_KEY:
-        return dash.no_update, dash.no_update
-
-    HOT_LAST_5M_KEY = key
-    with LOCK:
-        return top_hot_now_rows(n=15)
+    with CACHE_LOCK:
+        return list(CACHE.get("hot_gainers") or []), list(CACHE.get("hot_losers") or [])
 
 
 @dash_app.callback(
@@ -2089,8 +2180,7 @@ def update_hot_now(_):
     Input("refresh_volm", "n_intervals"),
 )
 def update_volm_grids(_):
-    with LOCK:
-        return top15_buy_sell_rvolm_rows(n=15)
+    return top15_buy_sell_rvolm_rows(n=15)
 
 
 # =============================================================================
@@ -2107,6 +2197,7 @@ async def _startup():
     seed_daily_stats_once(per_req_sleep=SEED_SLEEP_SEC)
     start_ticker_once()
     load_nfo_instruments_once()
+    start_compute_loop_once()  # <--- ULTRA-FAST precompute thread
     await openinterest.on_startup()
 
 
@@ -2123,8 +2214,10 @@ def dash_no_slash():
 @app.get("/health")
 def health():
     with LOCK:
+        offline = (time.time() - LAST_TICK_TS) > 10 if LAST_TICK_TS else True
         base = {
             "status": "ok",
+            "offline": offline,
             "seed_20d_done": DAILY_SEED_DONE,
             "seed_20d_progress": DAILY_SEED_PROGRESS,
             "seed_20d_errors": DAILY_SEED_ERRORS,
@@ -2135,6 +2228,18 @@ def health():
             "eod_tokens": len(EOD_SNAPSHOT),
             "nfo_loaded": bool(NFO_INS_DF is not None),
             "nfo_error": NFO_LOAD_ERR,
+        }
+    with CACHE_LOCK:
+        base["cache_updated"] = dict(CACHE.get("updated") or {})
+        base["cache_sizes"] = {
+            "sector_agg": len(CACHE.get("sector_agg") or {}),
+            "top15_gainers": len(CACHE.get("top15_gainers") or []),
+            "top15_losers": len(CACHE.get("top15_losers") or []),
+            "hvhr_gainers": len(CACHE.get("hvhr_gainers") or []),
+            "hvhr_losers": len(CACHE.get("hvhr_losers") or []),
+            "hot_gainers": len(CACHE.get("hot_gainers") or []),
+            "hot_losers": len(CACHE.get("hot_losers") or []),
+            "pcr_ready": bool(CACHE.get("pcr")),
         }
     return base
 
