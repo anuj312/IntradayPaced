@@ -3335,7 +3335,7 @@ td:first-child { text-align: left; }
 
 /* Make the popup wider (left-right) */
 .tt-modal-dialog-wide{
-  max-width: 96vw !important;  /* increase/decrease */
+  max-width: 99vw !important;  /* increase/decrease */
   width: 96vw !important;
 }
 
