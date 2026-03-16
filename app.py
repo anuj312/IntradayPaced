@@ -1232,6 +1232,7 @@ def sector_modal_component():
         "onGridSizeChanged": {"function": "params.api.sizeColumnsToFit();"},
     }
 
+    # Header: title left, Close button right
     header = html.Div(
         [
             html.Div(id="sector-modal-title", children="SECTOR", className="tt-modal-title"),
@@ -1276,12 +1277,9 @@ def sector_modal_component():
         scrollable=True,
         backdrop=True,
         keyboard=True,
-
-        # ✅ dbc.Modal uses className (NOT modalClassName)
-        className="tt-modal",
-        dialogClassName="tt-modal-dialog-wide", 
-        contentClassName="tt-modal-content",
-        backdropClassName="tt-modal-backdrop",
+        className="tt-modal",                    # dbc v1.6.0 compatible
+        contentClassName="tt-modal-content",     # dbc v1.6.0 compatible
+        backdropClassName="tt-modal-backdrop",   # dbc v1.6.0 compatible
     )
 
 # =============================================================================
