@@ -1173,9 +1173,8 @@ def sector_modal_component():
         "getRowId": {"function": "params.data.Symbol"},
         "alwaysShowVerticalScroll": True,
         "animateRows": True,
-        "suppressMenuHide": False,
 
-        # show ONLY funnel icon, hide header dropdown menu
+        # show ONLY funnel icon, hide hamburger menu
         "suppressHeaderMenuButton": True,
         "suppressHeaderFilterButton": False,
 
@@ -1185,13 +1184,7 @@ def sector_modal_component():
 
     header = html.Div(
         [
-            html.Div(
-                [
-                    html.Div(id="sector-modal-title", children="SECTOR", className="tt-modal-title"),
-                   
-                ],
-                className="tt-modal-titlewrap",
-            ),
+            html.Div(id="sector-modal-title", children="SECTOR", className="tt-modal-title"),
             dbc.Button(
                 "Close",
                 id="sector-modal-close",
@@ -1215,7 +1208,7 @@ def sector_modal_component():
                         rowData=[],
                         defaultColDef={"sortable": True, "filter": True, "resizable": True},
                         dashGridOptions=grid_opts,
-                        style={"height": "65vh", "width": "100%"},
+                        style={"height": "74vh", "width": "100%"},
                     ),
                     className="tt-modal-gridwrap",
                 ),
@@ -1230,8 +1223,8 @@ def sector_modal_component():
         backdrop=True,
         keyboard=True,
 
-        # premium CSS hooks (IMPORTANT)
-        dialogClassName="tt-modal-dialog",
+        # dbc 1.6.0 supports these (NOT dialogClassName)
+        modalClassName="tt-modal",
         contentClassName="tt-modal-content",
         backdropClassName="tt-modal-backdrop",
     )

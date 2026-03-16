@@ -3295,7 +3295,7 @@ td:first-child { text-align: left; }
 ================================ */
 
 .tt-modal-backdrop.modal-backdrop.show{background:rgba(0,0,0,.76)!important;backdrop-filter:blur(10px)}
-.tt-modal-dialog,.modal-dialog.modal-xl{max-width:min(1440px,95vw)!important}
+.tt-modal .modal-dialog{max-width:min(1440px,98vw)!important}
 
 .tt-modal-content{
   background:radial-gradient(900px 520px at 12% 0%,rgba(46,213,115,.12),transparent 55%),
