@@ -1208,7 +1208,7 @@ def sector_modal_component():
                         rowData=[],
                         defaultColDef={"sortable": True, "filter": True, "resizable": True},
                         dashGridOptions=grid_opts,
-                        style={"height": "74vh", "width": "100%"},
+                        style={"height": "70vh", "width": "100%"},
                     ),
                     className="tt-modal-gridwrap",
                 ),
