@@ -3319,3 +3319,16 @@ td:first-child { text-align: left; }
 .tt-modal-content .ag-theme-alpine-dark .ag-header-cell-text{font-weight:900!important}
 
 .tt-modal-content .ag-theme-alpine-dark{ --ag-font-size: 13px; }
+
+.tt-modal-header--flex{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  width:100%;
+  gap:12px;
+}
+
+.tt-modal-close-link{
+  margin-left:auto;
+  flex:0 0 auto;
+}

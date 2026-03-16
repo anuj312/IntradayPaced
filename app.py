@@ -1235,7 +1235,6 @@ def sector_modal_component():
     header = html.Div(
         [
             html.Div(id="sector-modal-title", children="SECTOR", className="tt-modal-title"),
-            # client-side close (instant, no server callback)
             dcc.Link(
                 dbc.Button(
                     "Close",
@@ -1245,9 +1244,10 @@ def sector_modal_component():
                 ),
                 href=BASE,
                 refresh=False,
+                className="tt-modal-close-link",
             ),
         ],
-        className="tt-modal-header",
+        className="tt-modal-header tt-modal-header--flex",
     )
 
     return dbc.Modal(
@@ -1276,11 +1276,12 @@ def sector_modal_component():
         scrollable=True,
         backdrop=True,
         keyboard=True,
-        modalClassName="tt-modal",
+
+        # ✅ dbc.Modal uses className (NOT modalClassName)
+        className="tt-modal",
         contentClassName="tt-modal-content",
         backdropClassName="tt-modal-backdrop",
     )
-
 
 # =============================================================================
 # PAGES
