@@ -1,11 +1,12 @@
 # app.py  (NO AUTH • NO FIREBASE • NO SUBSCRIPTIONS)
 #
 # Run:
+#   export KITE_API_KEY="..."
+#   export KITE_ACCESS_TOKEN="..."
 #   uvicorn app:app --reload --workers 1
 
 import os
 import time
-import math
 import threading
 import logging
 from collections import deque
@@ -27,14 +28,8 @@ import dash_ag_grid as dag
 
 from kiteconnect import KiteConnect, KiteTicker
 
-# Dash page plugins
-import web
-
 # OpenInterest FastAPI app (mounted)
 import optioninterest as openinterest
-
-# FNO prev-OI seed module
-import fnoseed
 
 
 # =============================================================================
@@ -67,15 +62,14 @@ HOT_LAST_5M_KEY: Optional[str] = None
 # Hot Now filters
 HOT_MIN_RET_PCT = float(os.getenv("HOT_MIN_RET_PCT", "0.25"))       # min |spike%| to include
 HOT_MIN_RANGE_PCT = float(os.getenv("HOT_MIN_RANGE_PCT", "0.40"))   # min window range%
-HOT_CLOSE_POS_TH = float(os.getenv("HOT_CLOSE_POS_TH", "0.60"))
 
 HVHR_N = int(os.getenv("HVHR_N", "20"))
 HVHR_RFACTOR_Q = float(os.getenv("HVHR_RFACTOR_Q", "0.85"))
 
+# PCR (NFO)
 PCR_STRIKES_AROUND_ATM = int(os.getenv("PCR_STRIKES_AROUND_ATM", "12"))
 PCR_CACHE_TTL_SEC = int(os.getenv("PCR_CACHE_TTL_SEC", "20"))
 PCR_QUOTE_CHUNK = int(os.getenv("PCR_QUOTE_CHUNK", "180"))
-
 NIFTY_SPOT_SYMBOL = os.getenv("NIFTY_SPOT_SYMBOL", "NSE:NIFTY 50")
 
 
@@ -308,6 +302,7 @@ def update_from_tick(tick: dict):
 
     _hot_history_push(token, time.time(), float(ltp), float(cumvol) if cumvol is not None else None)
     return ts
+
 
 def compute_20d_daily_stats_and_eod(token: int, days_back: int = 220) -> Dict[str, Any]:
     to_dt = datetime.now()
@@ -555,6 +550,9 @@ def pcr_label_from_value(pcr: float) -> str:
     return "STRONG SELL"
 
 
+# =============================================================================
+# RFACTOR / HOTNOW / SECTORS
+# =============================================================================
 def _time_factor_ist_for_rvol(now_ist: Optional[datetime] = None) -> float:
     now_ist = now_ist or datetime.now(IST)
     m_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
@@ -570,6 +568,7 @@ def _time_factor_ist_for_rvol(now_ist: Optional[datetime] = None) -> float:
 
     tf = mins_passed / total_mins
     return max(0.01, min(1.0, tf))
+
 
 def compute_rfactor_row_for_token(token: int):
     state_ = get_live_or_eod_state(token)
@@ -653,8 +652,6 @@ def _compute_hot_row_for_token(token: int):
     rng = float(hi - lo)
 
     base_pf = float(base_p)
-    last_pf = float(last_p)
-
     range_pct = (rng / (base_pf + 1e-9)) * 100.0
 
     up_spike_pct = (hi - base_pf) / (base_pf + 1e-9) * 100.0
@@ -667,11 +664,7 @@ def _compute_hot_row_for_token(token: int):
         if vol_win < 0:
             vol_win = None
 
-    return {
-        "range_pct": float(range_pct),
-        "spike_pct": float(spike_pct),
-        "vol_win": vol_win,
-    }
+    return {"range_pct": float(range_pct), "spike_pct": float(spike_pct), "vol_win": vol_win}
 
 
 def top_gainers_losers_rfactor_rows(n: int = 15):
@@ -763,16 +756,14 @@ def top_hot_now_rows(n: int = 15):
         if range_pct < min_rng:
             continue
 
-        rows.append(
-            {
-                "Symbol": sym,
-                "_spike": spike,
-                "_abs_spike": abs(spike),
-                "SPIKE%": round(spike, 2),
-                "RNG5%": round(range_pct, 2),
-                "DAY RNG%": None,
-            }
-        )
+        rows.append({
+            "Symbol": sym,
+            "_spike": spike,
+            "_abs_spike": abs(spike),
+            "SPIKE%": round(spike, 2),
+            "RNG5%": round(range_pct, 2),
+            "DAY RNG%": None,
+        })
 
     if not rows:
         return [], []
@@ -798,7 +789,7 @@ def top_hot_now_rows(n: int = 15):
 
 def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
     """
-    Must return keys used by sector_page():
+    Returns rows with keys:
       Symbol, Company, DirR, Price, %Change, Gap%, RVOLm, RFactor
     """
     rows = []
@@ -862,6 +853,12 @@ def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
 
 
 def compute_sector_aggregates() -> Dict[str, Dict[str, float]]:
+    """
+    Sector bars metrics:
+      DirR = signed mean(DirR)
+      RVOLmNetSum = Σbuy RVOLm - Σsell RVOLm
+      RVOLmNetMean = RVOLmNetSum / N
+    """
     tf = _time_factor_ist_for_rvol(datetime.now(IST))
     out: Dict[str, Dict[str, float]] = {}
 
@@ -973,6 +970,9 @@ def compute_market_sentiment_proxy():
     return {"adv": adv, "dec": dec, "unch": unch, "total": total, "score": float(score), "label": label}
 
 
+# =============================================================================
+# TICKER
+# =============================================================================
 _started = False
 
 
@@ -1032,29 +1032,9 @@ dash_app = dash.Dash(
 server = dash_app.server
 
 
-web.register_volm(
-    dash_app,
-    BASE=BASE,
-    ctx={
-        "LOCK": LOCK,
-        "ALL_SYMBOLS": ALL_SYMBOLS,
-        "symbol_to_token": symbol_to_token,
-        "DAILY_STATS": DAILY_STATS,
-        "get_live_or_eod_state": get_live_or_eod_state,
-        "IST": IST,
-    },
-)
-
-web.register_fno_movers(
-    dash_app,
-    BASE=BASE,
-    ctx={
-        "ALL_SYMBOLS": ALL_SYMBOLS,
-        "IST": IST,
-    },
-)
-
-
+# =============================================================================
+# UI: Shared components
+# =============================================================================
 def dial_component(prefix: str, title: str):
     return html.Div(
         html.Div(
@@ -1080,31 +1060,16 @@ def dial_component(prefix: str, title: str):
     )
 
 
-def _sector_grid_opts(sort_by: str) -> dict:
-    sb = (sort_by or "RFactor").strip().upper()
-
-    if sb in ("RVOL", "RVOLM"):
-        sort_model = [{"colId": "rvolm", "sort": "desc"}]
-    elif sb in ("DIRR", "DIR R"):
-        sort_model = [{"colId": "dirr", "sort": "desc"}]
-    elif sb in ("%CHANGE", "%CHG", "CHG"):
-        sort_model = [{"colId": "pct", "sort": "desc"}]
-    else:
-        sort_model = [{"colId": "rfactor", "sort": "desc"}]
-
-    return {
-        "domLayout": "autoHeight",
-        "animateRows": True,
-        "suppressMenuHide": True,
-        "suppressHeaderMenuButton": False,
-        "suppressHeaderFilterButton": False,
-        "alwaysShowVerticalScroll": False,
-        "sortModel": sort_model,
-    }
+def _extract_sector_from_path(pn: str) -> Optional[str]:
+    pn = (pn or "").strip()
+    if "/sector/" not in pn:
+        return None
+    sector = unquote(pn.split("/sector/", 1)[1]).strip("/").upper()
+    return sector or None
 
 
-def sector_page(sector: str):
-    coldefs = [
+def _sector_modal_coldefs():
+    return [
         {
             "colId": "stock",
             "field": "Symbol",
@@ -1121,7 +1086,7 @@ def sector_page(sector: str):
             "field": "Company",
             "headerName": "COMPANY",
             "cellRenderer": "CompanyLinkCell",
-            "minWidth": 180,
+            "minWidth": 200,
             "flex": 1,
             "headerClass": "h-left",
             "cellClass": "c-left",
@@ -1131,11 +1096,8 @@ def sector_page(sector: str):
             "field": "DirR",
             "headerName": "DIR R",
             "type": "rightAligned",
-            "cellRenderer": "Num2Cell",  # <-- fixed 2 decimals
-            "cellClassRules": {
-                "cell-pos": "params.value > 0",
-                "cell-neg": "params.value < 0",
-            },
+            "cellRenderer": "Num2Cell",
+            "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"},
             "minWidth": 110,
             "maxWidth": 130,
             "suppressSizeToFit": True,
@@ -1147,7 +1109,7 @@ def sector_page(sector: str):
             "field": "Price",
             "headerName": "PRICE",
             "type": "rightAligned",
-            "cellRenderer": "Num2Cell",  # <-- fixed 2 decimals
+            "cellRenderer": "Num2Cell",
             "minWidth": 110,
             "maxWidth": 130,
             "suppressSizeToFit": True,
@@ -1159,11 +1121,8 @@ def sector_page(sector: str):
             "field": "%Change",
             "headerName": "%CHG",
             "type": "rightAligned",
-            "cellRenderer": "Pct2Cell",  # <-- +0.20%
-            "cellClassRules": {
-                "cell-pos": "params.value > 0",
-                "cell-neg": "params.value < 0",
-            },
+            "cellRenderer": "Pct2Cell",
+            "cellClassRules": {"cell-pos": "params.value > 0", "cell-neg": "params.value < 0"},
             "minWidth": 105,
             "maxWidth": 125,
             "suppressSizeToFit": True,
@@ -1175,7 +1134,7 @@ def sector_page(sector: str):
             "field": "Gap%",
             "headerName": "GAP %",
             "type": "rightAligned",
-            "cellRenderer": "Pct2Cell",  # <-- +0.20%
+            "cellRenderer": "Pct2Cell",
             "minWidth": 105,
             "maxWidth": 125,
             "suppressSizeToFit": True,
@@ -1187,7 +1146,7 @@ def sector_page(sector: str):
             "field": "RVOLm",
             "headerName": "RVOLm",
             "type": "rightAligned",
-            "cellRenderer": "Num2Cell",  # <-- fixed 2 decimals
+            "cellRenderer": "Num2Cell",
             "minWidth": 110,
             "maxWidth": 130,
             "suppressSizeToFit": True,
@@ -1199,7 +1158,7 @@ def sector_page(sector: str):
             "field": "RFactor",
             "headerName": "RFACTOR",
             "type": "rightAligned",
-            "cellRenderer": "Num2Cell",  # <-- fixed 2 decimals
+            "cellRenderer": "Num2Cell",
             "minWidth": 120,
             "maxWidth": 140,
             "suppressSizeToFit": True,
@@ -1208,58 +1167,78 @@ def sector_page(sector: str):
         },
     ]
 
+
+def sector_modal_component():
     grid_opts = {
         "getRowId": {"function": "params.data.Symbol"},
-        "alwaysShowVerticalScroll": False,
-        "animateRows": False,
+        "alwaysShowVerticalScroll": True,
+        "animateRows": True,
         "suppressMenuHide": False,
+
+        # show ONLY funnel icon, hide header dropdown menu
+        "suppressHeaderMenuButton": True,
+        "suppressHeaderFilterButton": False,
+
         "onGridReady": {"function": "params.api.sizeColumnsToFit();"},
         "onGridSizeChanged": {"function": "params.api.sizeColumnsToFit();"},
     }
 
-    title = sector.replace("_", " ").title()
-
-    return html.Div(
+    header = html.Div(
         [
-            dcc.Interval(id="refresh_sector", interval=2000, n_intervals=0),
-            dbc.Row(
+            html.Div(
                 [
-                    dbc.Col(
-                        dcc.Link("← Back", href=BASE, className="stat-chip", style={"textDecoration": "none"}),
-                        width="auto",
-                    ),
-                    dbc.Col(html.H4(title, className="page-title mb-0"), width=True),
-                    dbc.Col(
-                        dbc.RadioItems(
-                            id="sector-sort",
-                            options=[
-                                {"label": "Sort: RFactor", "value": "RFactor"},
-                                {"label": "Sort: RVOLm", "value": "RVOLm"},
-                                {"label": "Sort: DirR", "value": "DirR"},
-                                {"label": "Sort: %Chg", "value": "%Change"},
-                            ],
-                            value="RFactor",
-                            inline=True,
-                        ),
-                        width="auto",
-                    ),
+                    html.Div(id="sector-modal-title", children="SECTOR", className="tt-modal-title"),
+                   
                 ],
-                className="align-items-center g-2 mb-2",
+                className="tt-modal-titlewrap",
             ),
-            dag.AgGrid(
-                id="grid",
-                className="ag-theme-alpine-dark grid-wrap compact-grid",
-                columnDefs=coldefs,
-                rowData=[],
-                defaultColDef={"sortable": True, "filter": True, "resizable": True},
-                dashGridOptions=grid_opts,
-                style={"width": "100%"},
+            dbc.Button(
+                "Close",
+                id="sector-modal-close",
+                color="secondary",
+                outline=True,
+                className="tt-modal-close-btn",
             ),
         ],
-        className="page-wrap",
+        className="tt-modal-header",
     )
 
+    return dbc.Modal(
+        [
+            dbc.ModalHeader(header, close_button=False, className="tt-modal-header-wrap"),
+            dbc.ModalBody(
+                html.Div(
+                    dag.AgGrid(
+                        id="sector-modal-grid",
+                        className="ag-theme-alpine-dark grid-wrap compact-grid tt-modal-grid",
+                        columnDefs=_sector_modal_coldefs(),
+                        rowData=[],
+                        defaultColDef={"sortable": True, "filter": True, "resizable": True},
+                        dashGridOptions=grid_opts,
+                        style={"height": "65vh", "width": "100%"},
+                    ),
+                    className="tt-modal-gridwrap",
+                ),
+                className="tt-modal-body",
+            ),
+        ],
+        id="sector-modal",
+        is_open=False,
+        size="xl",
+        centered=True,
+        scrollable=True,
+        backdrop=True,
+        keyboard=True,
 
+        # premium CSS hooks (IMPORTANT)
+        dialogClassName="tt-modal-dialog",
+        contentClassName="tt-modal-content",
+        backdropClassName="tt-modal-backdrop",
+    )
+
+# =============================================================================
+# PAGES
+# =============================================================================
 def sectors_page():
     four_cols = [
         {"colId": "stock", "field": "Symbol", "headerName": "STOCK", "cellRenderer": "SymbolCell",
@@ -1314,7 +1293,7 @@ def sectors_page():
                             options=[
                                 {"label": "Sort: RVOLm", "value": "RVOLm"},
                                 {"label": "Sort: RVOLm Mean", "value": "RVOLmMean"},
-                                {"label": "Sort: DirR", "value": "DirR"},
+                                {"label": "Sort: DirR (mean)", "value": "DirR"},
                             ],
                             value="RVOLmMean",
                             inline=True,
@@ -1327,7 +1306,11 @@ def sectors_page():
             ),
 
             html.Div(id="sector-bars", className="sector-bars-wrap"),
-            html.Div("RVOLm = (Σbuy−Σsell). RVOLm Mean = (Σbuy−Σsell)/N. DirR = mean directional rfactor.", className="hint"),
+            html.Div(
+                "Click a sector bar to open popup. "
+                "RVOLm = net paced rel vol (buy−sell). DirR = signed mean directional rfactor.",
+                className="hint",
+            ),
 
             html.Hr(),
 
@@ -1463,11 +1446,159 @@ def sectors_page():
     )
 
 
+# --- Minimal VOLM page: Top15 BUY/SELL by RVOLm ---
+def top15_buy_sell_rvolm_rows(n: int = 15):
+    tf = _time_factor_ist_for_rvol(datetime.now(IST))
+    buy = []
+    sell = []
+
+    for sym in ALL_SYMBOLS:
+        tok = symbol_to_token.get(sym)
+        if not tok:
+            continue
+
+        state_ = get_live_or_eod_state(tok)
+        if not state_:
+            continue
+
+        ltp, vol_today, ohlc = state_
+        op = (ohlc or {}).get("open")
+        if op is None:
+            continue
+
+        try:
+            ltp = float(ltp)
+            vol_today = float(vol_today)
+            op = float(op)
+        except Exception:
+            continue
+
+        if op <= 0:
+            continue
+
+        st = DAILY_STATS.get(tok) or {}
+        avg_vol_20 = st.get("avg_vol_20")
+        try:
+            avg_vol_20 = float(avg_vol_20) if avg_vol_20 is not None else None
+        except Exception:
+            avg_vol_20 = None
+
+        if not avg_vol_20 or avg_vol_20 <= 0:
+            continue
+
+        pct_open = (ltp - op) / op * 100.0
+        expected = avg_vol_20 * tf
+        rvolm = vol_today / (expected + 1e-9)
+
+        row = {
+            "Symbol": sym,
+            "%Change": round(float(pct_open), 2),
+            "RVOLm": round(float(rvolm), 2),
+            "Vol": int(vol_today),
+        }
+
+        if pct_open >= 0:
+            buy.append(row)
+        else:
+            sell.append(row)
+
+    buy.sort(key=lambda x: float(x.get("RVOLm") or 0.0), reverse=True)
+    sell.sort(key=lambda x: float(x.get("RVOLm") or 0.0), reverse=True)
+    return buy[:n], sell[:n]
+
+
+def volm_page():
+    cols = [
+        {"colId": "stock", "field": "Symbol", "headerName": "STOCK", "cellRenderer": "SymbolCell",
+         "minWidth": 140, "maxWidth": 170, "suppressSizeToFit": True,
+         "headerClass": "h-left", "cellClass": "c-left"},
+        {"colId": "pct", "field": "%Change", "headerName": "%CHG", "cellRenderer": "PctPill",
+         "minWidth": 140, "maxWidth": 150, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right",
+         "cellClass": "ag-right-aligned-cell cell-num c-right"},
+        {"colId": "rvolm", "field": "RVOLm", "headerName": "RVOLm", "cellRenderer": "Num2Cell",
+         "minWidth": 120, "maxWidth": 140, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right",
+         "cellClass": "ag-right-aligned-cell cell-num c-right"},
+        {"colId": "vol", "field": "Vol", "headerName": "VOLUME", "cellRenderer": "VolPill",
+         "minWidth": 150, "maxWidth": 190, "suppressSizeToFit": True,
+         "headerClass": "ag-right-aligned-header h-right",
+         "cellClass": "ag-right-aligned-cell cell-num c-right"},
+    ]
+
+    grid_opts = {
+        "getRowId": {"function": "params.data.Symbol"},
+        "alwaysShowVerticalScroll": False,
+        "animateRows": False,
+        "suppressMenuHide": False,
+        "onGridReady": {"function": "params.api.sizeColumnsToFit();"},
+        "onGridSizeChanged": {"function": "params.api.sizeColumnsToFit();"},
+    }
+
+    return html.Div(
+        [
+            dcc.Interval(id="refresh_volm", interval=2000, n_intervals=0),
+
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dcc.Link("← Back", href=BASE, className="stat-chip", style={"textDecoration": "none"}),
+                        width="auto",
+                    ),
+                    dbc.Col(html.H4("Volm (RVOLm)", className="page-title mb-0"), width=True),
+                ],
+                className="align-items-center g-2 mb-2",
+            ),
+
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            html.H6("Top 15 BUY (by RVOLm)", className="mt-1"),
+                            dag.AgGrid(
+                                id="volm-buy-grid",
+                                className="ag-theme-alpine-dark grid-wrap compact-grid",
+                                columnDefs=cols,
+                                rowData=[],
+                                defaultColDef={"sortable": True, "filter": True, "resizable": True},
+                                dashGridOptions=grid_opts,
+                                style={"height": "min(520px, 56vh)", "width": "100%"},
+                            ),
+                        ],
+                        md=6,
+                    ),
+                    dbc.Col(
+                        [
+                            html.H6("Top 15 SELL (by RVOLm)", className="mt-1"),
+                            dag.AgGrid(
+                                id="volm-sell-grid",
+                                className="ag-theme-alpine-dark grid-wrap compact-grid",
+                                columnDefs=cols,
+                                rowData=[],
+                                defaultColDef={"sortable": True, "filter": True, "resizable": True},
+                                dashGridOptions=grid_opts,
+                                style={"height": "min(520px, 56vh)", "width": "100%"},
+                            ),
+                        ],
+                        md=6,
+                    ),
+                ],
+                className="g-2",
+            ),
+        ],
+        className="page-wrap",
+    )
+
+
+# =============================================================================
+# DASH ROOT LAYOUT (modal lives here so callbacks always have components)
+# =============================================================================
 dash_app.layout = dbc.Container(
     fluid=True,
     children=[
         dcc.Location(id="url"),
         dcc.Interval(id="top_refresh", interval=1000, n_intervals=0),
+
         html.Div(
             dbc.Row(
                 [
@@ -1482,32 +1613,31 @@ dash_app.layout = dbc.Container(
             ),
             className="topbar-wrap",
         ),
+
         html.Div(id="app-body"),
+
+        # Sector popup (opens when URL is /dash/sector/<SECTOR>)
+        sector_modal_component(),
     ],
 )
 
 
-def _extract_sector_from_path(pn: str) -> Optional[str]:
-    pn = (pn or "").strip()
-    if "/sector/" not in pn:
-        return None
-    sector = unquote(pn.split("/sector/", 1)[1]).strip("/").upper()
-    return sector or None
-
-
+# =============================================================================
+# ROUTER (sector route returns SAME sectors page; modal opens via URL)
+# =============================================================================
 @dash_app.callback(Output("app-body", "children"), Input("url", "pathname"))
 def route(pathname):
     pn = (pathname or "").strip() or "/"
 
+    # sectors home
     if pn in ("/", "/dash", "/dash/", BASE):
         return sectors_page()
 
+    # volm page
     if pn in (f"{BASE}volm", f"{BASE}volm/"):
-        return web.volm_page(BASE)
+        return volm_page()
 
-    if pn in (f"{BASE}fnomovers", f"{BASE}fnomovers/"):
-        return web.fno_movers_page(BASE)
-
+    # openinterest iframe
     if pn in (f"{BASE}openinterest", f"{BASE}openinterest/"):
         return html.Iframe(
             src="/openinterest",
@@ -1519,13 +1649,17 @@ def route(pathname):
             },
         )
 
+    # sector paths show sectors page + modal (NOT a full separate page)
     sector = _extract_sector_from_path(pn)
     if sector:
-        return sector_page(sector) if sector in SECTOR_DEFINITIONS else dbc.Alert("Sector not found", color="danger")
+        return sectors_page()
 
     return sectors_page()
 
 
+# =============================================================================
+# TOP CHIPS
+# =============================================================================
 def _oi_inference_chip():
     try:
         with openinterest.state_lock:
@@ -1555,47 +1689,6 @@ def _oi_inference_chip():
     return html.Div(text, className="stat-chip", style=style, title=label)
 
 
-def _fno_oi_seed_chip():
-    """
-    Header chip for FNO prev-OI seed status from fnoseed.
-    Always returns a chip (READY / SEEDING / NOT SEEDED / ERR / WAIT).
-    """
-    try:
-        with fnoseed.state_lock:
-            futdf = fnoseed.FNO_FUT_DF
-            fut_loaded = bool(futdf is not None and not futdf.empty)
-            near = fnoseed.near_expiry_from_df(futdf, IST) if fut_loaded else None
-            near_s = str(near) if near else None
-
-            prog = dict(fnoseed.PREV_OI_PROGRESS.get(near_s) or {}) if near_s else {}
-            running = bool(prog.get("running"))
-            done = int(prog.get("done") or 0)
-            total = int(prog.get("total") or 0)
-            errors = int(prog.get("errors") or 0)
-            last_err = fnoseed.LAST_ERROR
-    except Exception as e:
-        return html.Div("FNO OI: ERR", className="stat-chip", title=repr(e))
-
-    # Not started yet / waiting prerequisites
-    if not fut_loaded:
-        return html.Div("FNO OI: WAIT", className="stat-chip", title="FUT universe not loaded yet")
-
-    if total <= 0 and not running:
-        # no progress info yet
-        if last_err:
-            return html.Div("FNO OI: ERR", className="stat-chip", style={"color": "var(--bad)"}, title=str(last_err))
-        return html.Div("FNO OI: NOT SEEDED", className="stat-chip", title="Prev-OI map empty")
-
-    # Running
-    if running:
-        txt = f"FNO OI: SEEDING {done}/{total} (err {errors})"
-        return html.Div(txt, className="stat-chip", style={"color": "#ffcc66"}, title=str(last_err or ""))
-
-    # Done
-    txt = f"FNO OI: READY {done}/{total} (err {errors})"
-    style = {"color": "var(--good)"} if errors == 0 else {"color": "#ffcc66"}
-    return html.Div(txt, className="stat-chip", style=style, title=str(last_err or ""))
-
 @dash_app.callback(Output("top-stats", "children"), Input("top_refresh", "n_intervals"))
 def update_top_stats(_):
     updated_str = datetime.now(IST).strftime("%H:%M:%S")
@@ -1610,7 +1703,6 @@ def update_top_stats(_):
         d_total = int(DAILY_SEED_PROGRESS.get("total", 0) or 0)
         d_err = int(DAILY_SEED_ERRORS or 0)
 
-    # ---- Sentiment chip ----
     sent_label = str(sm.get("label") or "NEUTRAL").upper()
     sent_score = float(sm.get("score") or 0.0)
     if sent_label == "BULLISH":
@@ -1627,7 +1719,6 @@ def update_top_stats(_):
         title=f"Adv {sm.get('adv',0)} • Dec {sm.get('dec',0)} • Unch {sm.get('unch',0)}",
     )
 
-    # ---- PCR chip ----
     pn = compute_real_nifty_oi_pcr(strikes_around_atm=PCR_STRIKES_AROUND_ATM)
     if pn and pn.get("pcr") is not None:
         pcr = float(pn["pcr"])
@@ -1648,29 +1739,8 @@ def update_top_stats(_):
     else:
         pcr_chip = html.Div("PCR: LOADING", className="stat-chip")
 
-    # ---- FNO OI seed progress (show ONLY while running; only after DAILY seed done) ----
-    f_running = False
-    f_done_n = 0
-    f_total = 0
-    f_err = 0
-    try:
-        with fnoseed.state_lock:
-            futdf = fnoseed.FNO_FUT_DF
-            fut_loaded = bool(futdf is not None and not futdf.empty)
-            near = fnoseed.near_expiry_from_df(futdf, IST) if fut_loaded else None
-            near_s = str(near) if near else None
-            prog = dict(fnoseed.PREV_OI_PROGRESS.get(near_s) or {}) if near_s else {}
-
-            f_running = bool(prog.get("running"))
-            f_done_n = int(prog.get("done") or 0)
-            f_total = int(prog.get("total") or 0)
-            f_err = int(prog.get("errors") or 0)
-    except Exception:
-        pass
-
     chips = [
         dbc.Badge("Offline" if offline else "Live", color=("danger" if offline else "success"), className="stat-badge"),
-
         html.A(
             "Volm",
             href=f"{BASE}volm",
@@ -1678,21 +1748,11 @@ def update_top_stats(_):
             className="stat-chip",
             style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"},
         ),
-
-        html.A(
-            "FNO",
-            href=f"{BASE}fnomovers",
-            target="_blank",
-            className="stat-chip",
-            style={"textDecoration": "none", "marginLeft": "8px", "cursor": "pointer"},
-        ),
-
         _oi_inference_chip(),
         sentiment_chip,
         pcr_chip,
     ]
 
-    # DAILY seed badge while running
     if not d_done:
         chips.append(
             dbc.Badge(
@@ -1702,19 +1762,7 @@ def update_top_stats(_):
                 style={"marginLeft": "8px"},
             )
         )
-    else:
-        # After DAILY seed completes: show FNO badge ONLY while running (hide once done)
-        if f_running:
-            chips.append(
-                dbc.Badge(
-                    f"FNO OI Seeding {f_done_n}/{f_total} (err {f_err})",
-                    color="warning",
-                    className="stat-badge",
-                    style={"marginLeft": "8px"},
-                )
-            )
 
-    # TPS intentionally hidden
     chips += [
         html.Div(f"Ticks {tot:,}", className="stat-chip"),
         html.Div(f"Time {updated_str}", className="stat-chip"),
@@ -1723,23 +1771,18 @@ def update_top_stats(_):
     return html.Div(chips, className="top-stats-wrap")
 
 
+# =============================================================================
+# SECTOR HISTOGRAM (still uses Links; now those Links open popup via URL)
+# =============================================================================
 @dash_app.callback(
     Output("sector-bars", "children"),
     Input("refresh_sectors", "n_intervals"),
     Input("sectors-sort", "value"),
 )
 def render_sector_bars(_, sort_by):
-    """
-    Dynamic sector histogram:
-      - Y-axis is true min..max (NOT symmetric)
-      - 0-line moves up/down dynamically
-      - Axis shows exactly 5 ticks: top, top/2, 0, bottom/2, bottom
-      - Sector names remain below bars (handled by CSS via .sector-hist-col / .sector-hist-name)
-    """
     sort_by = (sort_by or "RVOLmMean").strip()
 
     try:
-        # Pick metric
         if sort_by == "DirR":
             metric = "DirR"
         elif sort_by == "RVOLmMean":
@@ -1758,44 +1801,35 @@ def render_sector_bars(_, sort_by):
         if not items:
             return html.Div("Loading sector bars…", className="hint")
 
-        # Values
         vals = [float(m.get(metric, 0.0) or 0.0) for _, m in items]
         raw_min = min(vals)
         raw_max = max(vals)
 
-        # Add a little padding so bars/ticks don't hug plot edges
         span = raw_max - raw_min
         pad = (0.08 * span) if span > 1e-9 else 0.25
 
         vmin = raw_min - pad
         vmax = raw_max + pad
 
-        # Ensure 0 is inside range (so 0-line exists)
         vmin = min(vmin, 0.0)
         vmax = max(vmax, 0.0)
 
-        # Guard
         if (vmax - vmin) <= 1e-9:
             vmin, vmax = -1.0, 1.0
 
         tick_min = float(vmin)
         tick_max = float(vmax)
-        axis_span = float(tick_max - tick_min)
-        if axis_span <= 1e-12:
-            axis_span = 1.0
+        axis_span = float(tick_max - tick_min) or 1.0
 
-        # 0-line position from TOP in %
         zero_pct = ((tick_max - 0.0) / axis_span) * 100.0
         zero_pct = max(0.0, min(100.0, zero_pct))
 
-        # Plot sizing
-        plot_h = int(os.getenv("SECTOR_PLOT_H_PX", "340"))
-        pos_px = plot_h * (zero_pct / 100.0)     # pixels available above 0
-        neg_px = plot_h - pos_px                 # pixels available below 0
+        plot_h = int(os.getenv("SECTOR_PLOT_H_PX", "350"))
+        pos_px = plot_h * (zero_pct / 100.0)
+        neg_px = plot_h - pos_px
 
-        # Domains used for scaling bar heights
-        pos_dom = max(0.0, tick_max)             # max positive on axis
-        neg_dom = max(0.0, -tick_min)            # max negative magnitude on axis
+        pos_dom = max(0.0, tick_max)
+        neg_dom = max(0.0, -tick_min)
         eps = 1e-12
 
         def fmt(x: float) -> str:
@@ -1804,31 +1838,20 @@ def render_sector_bars(_, sort_by):
                 x = 0.0
             return f"{x:.2f}"
 
-        # EXACTLY 5 axis labels like: 1, 0.50, 0, -0.50, -1 (but dynamic range)
         ticks = [tick_max, tick_max / 2.0, 0.0, tick_min / 2.0, tick_min]
 
-        # ----- Axis (absolute ticks) -----
         axis_ticks = []
         for tv in ticks:
             top_pct = ((tick_max - float(tv)) / axis_span) * 100.0
             axis_ticks.append(
-                html.Div(
-                    fmt(tv),
-                    className="sector-axis-tick",
-                    style={"top": f"{top_pct:.2f}%"},
-                )
+                html.Div(fmt(tv), className="sector-axis-tick", style={"top": f"{top_pct:.2f}%"})
             )
 
-        axis = html.Div(
-            axis_ticks,
-            className="sector-hist-axis",
-            style={"height": f"{plot_h}px"},
-        )
+        axis = html.Div(axis_ticks, className="sector-hist-axis", style={"height": f"{plot_h}px"})
 
-        # ----- Build plot -----
         children = [
             axis,
-            html.Div(className="sector-hist-zero-line"),  # global 0-line across plot
+            html.Div(className="sector-hist-zero-line"),
         ]
 
         bar_min_px = 4.0
@@ -1838,7 +1861,6 @@ def render_sector_bars(_, sort_by):
             disp = sector.replace("_", " ").upper()
             val_str = f"{val:+.2f}"
 
-            # Scale bar height into available pos/neg pixel space
             if val >= 0:
                 bar_px = (val / (pos_dom + eps)) * pos_px if pos_dom > 0 and pos_px > 0 else 0.0
                 bar_px = min(max(bar_px, 0.0), pos_px)
@@ -1849,32 +1871,26 @@ def render_sector_bars(_, sort_by):
             if 0 < bar_px < bar_min_px:
                 bar_px = bar_min_px
 
+            # NOTE: Link changes URL to /dash/sector/<sector> which opens modal (no full page)
             children.append(
                 dcc.Link(
                     href=f"{BASE}sector/{sector}",
                     className="sector-hist-link",
                     children=html.Div(
                         [
-                            # tooltip
                             html.Div(
-                                [
-                                    html.Div(disp, className="sector-hist-tip-name"),
-                                    html.Div(val_str, className="sector-hist-tip-val"),
-                                ],
+                                [html.Div(disp, className="sector-hist-tip-name"),
+                                 html.Div(val_str, className="sector-hist-tip-val")],
                                 className="sector-hist-tooltip",
                             ),
-                            # track + bar
                             html.Div(
-                                [
-                                    html.Div(
-                                        className=("sector-hist-bar pos" if val >= 0 else "sector-hist-bar neg"),
-                                        style={"height": f"{bar_px:.0f}px"},
-                                    )
-                                ],
+                                [html.Div(
+                                    className=("sector-hist-bar pos" if val >= 0 else "sector-hist-bar neg"),
+                                    style={"height": f"{bar_px:.0f}px"},
+                                )],
                                 className="sector-hist-track",
                                 style={"height": f"{plot_h}px"},
                             ),
-                            # sector name (below histogram)
                             html.Div(disp, className="sector-hist-name"),
                         ],
                         className="sector-hist-col",
@@ -1886,10 +1902,7 @@ def render_sector_bars(_, sort_by):
         return html.Div(
             children,
             className="sector-hist-plot",
-            style={
-                "--zero": f"{zero_pct:.2f}%",
-                "--axisW": "68px",
-            },
+            style={"--zero": f"{zero_pct:.2f}%", "--axisW": "68px"},
         )
 
     except Exception:
@@ -1897,6 +1910,38 @@ def render_sector_bars(_, sort_by):
         return html.Div("Sector bars error (see logs).", className="hint")
 
 
+# =============================================================================
+# MODAL OPEN/CLOSE LOGIC
+# =============================================================================
+@dash_app.callback(
+    Output("sector-modal", "is_open"),
+    Output("sector-modal-title", "children"),
+    Output("sector-modal-grid", "rowData"),
+    Input("url", "pathname"),
+    Input("top_refresh", "n_intervals"),  # refresh modal live while open
+)
+def sync_sector_modal(pathname, _tick):
+    sector = _extract_sector_from_path(pathname)
+    if sector and sector in SECTOR_DEFINITIONS:
+        with LOCK:
+            rows = sector_rows_sorted(sector, sort_by="RFactor")
+        title = sector.replace("_", " ").title()
+        return True, title, rows
+    return False, "Sector", []
+
+
+@dash_app.callback(
+    Output("url", "pathname"),
+    Input("sector-modal-close", "n_clicks"),
+    prevent_initial_call=True,
+)
+def close_sector_modal(_n):
+    return BASE
+
+
+# =============================================================================
+# OTHER DASH CALLBACKS
+# =============================================================================
 def _state_class(label: str) -> str:
     L = (label or "").upper().strip()
     L = " ".join(L.split())
@@ -1971,10 +2016,7 @@ def update_dials(_):
         pcr_sub = html.Span(
             [
                 html.Span(label, className=f"dial-state {_state_class(label)}"),
-                html.Span(
-                    f"PCR {pcr:.2f} • PE {pe_txt} • CE {ce_txt}",
-                    className="dial-meta",
-                ),
+                html.Span(f"PCR {pcr:.2f} • PE {pe_txt} • CE {ce_txt}", className="dial-meta"),
             ],
             className="dial-sub-inner",
         )
@@ -2040,25 +2082,13 @@ def update_hot_now(_):
 
 
 @dash_app.callback(
-    Output("grid", "rowData"),
-    Output("grid", "dashGridOptions"),
-    Input("refresh_sector", "n_intervals"),
-    Input("url", "pathname"),
-    Input("sector-sort", "value"),
+    Output("volm-buy-grid", "rowData"),
+    Output("volm-sell-grid", "rowData"),
+    Input("refresh_volm", "n_intervals"),
 )
-def update_grid(_n, pathname, sort_by):
-    pn = (pathname or "").strip()
-    sector = _extract_sector_from_path(pn)
-    if not sector:
-        return dash.no_update, dash.no_update
-
-    if sector not in SECTOR_DEFINITIONS:
-        return [], _sector_grid_opts(sort_by)
-
+def update_volm_grids(_):
     with LOCK:
-        rows = sector_rows_sorted(sector, sort_by=sort_by)
-
-    return rows, _sector_grid_opts(sort_by)
+        return top15_buy_sell_rvolm_rows(n=15)
 
 
 # =============================================================================
@@ -2075,23 +2105,6 @@ async def _startup():
     seed_daily_stats_once(per_req_sleep=SEED_SLEEP_SEC)
     start_ticker_once()
     load_nfo_instruments_once()
-
-    def _start_fno_seed_when_ready():
-        while True:
-            with LOCK:
-                done = DAILY_SEED_DONE
-            if done:
-                break
-            time.sleep(2)
-
-        fnoseed.start_seed_near_expiry_once(
-            kite=kite,
-            ist=IST,
-            allowed_underlyings=ALL_SYMBOLS,
-            pace_sec=float(os.getenv("FNO_PREV_OI_PACE_SEC", "0.35")),
-        )
-
-    threading.Thread(target=_start_fno_seed_when_ready, daemon=True).start()
     await openinterest.on_startup()
 
 
@@ -2121,23 +2134,6 @@ def health():
             "nfo_loaded": bool(NFO_INS_DF is not None),
             "nfo_error": NFO_LOAD_ERR,
         }
-
-    try:
-        with fnoseed.state_lock:
-            futdf = fnoseed.FNO_FUT_DF
-            fut_loaded = bool(futdf is not None and not futdf.empty)
-            near = fnoseed.near_expiry_from_df(futdf, IST) if fut_loaded else None
-            near_s = str(near) if near else None
-            prog = dict(fnoseed.PREV_OI_PROGRESS.get(near_s) or {}) if near_s else {}
-            base.update({
-                "fno_fut_loaded": fut_loaded,
-                "fno_near_expiry": near_s,
-                "fno_prev_oi_progress": prog,
-                "fno_last_error": getattr(fnoseed, "LAST_ERROR", None),
-            })
-    except Exception as e:
-        base.update({"fno_prev_oi_error": repr(e)})
-
     return base
 
 

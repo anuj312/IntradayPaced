@@ -3268,3 +3268,54 @@ td:first-child { text-align: left; }
     0 8px 22px rgba(0,0,0,0.55) !important;
 }
 
+/* Make ALL grid values bold */
+.ag-theme-alpine-dark .ag-cell {
+  font-weight: 800 !important;
+}
+
+/* Green / Red for sign-based cells */
+.ag-theme-alpine-dark .ag-cell.cell-pos {
+  color: var(--good) !important;   /* make sure --good is defined in :root */
+  font-weight: 800 !important;
+}
+
+.ag-theme-alpine-dark .ag-cell.cell-neg {
+  color: var(--bad) !important;    /* make sure --bad is defined in :root */
+  font-weight: 800 !important;
+}
+
+
+.tt-modal-dialog{
+  max-width: min(1440px, 98vw) !important;  /* was ~1280/96vw */
+}
+
+/* ================================
+   SECTOR POPUP (Modal) — Premium only (SHORT)
+   Paste at VERY END of theme.css
+================================ */
+
+.tt-modal-backdrop.modal-backdrop.show{background:rgba(0,0,0,.76)!important;backdrop-filter:blur(10px)}
+.tt-modal-dialog,.modal-dialog.modal-xl{max-width:min(1440px,95vw)!important}
+
+.tt-modal-content{
+  background:radial-gradient(900px 520px at 12% 0%,rgba(46,213,115,.12),transparent 55%),
+             radial-gradient(900px 520px at 88% 0%,rgba(88,130,255,.16),transparent 55%),
+             rgba(10,12,16,.94)!important;
+  border:1px solid rgba(255,255,255,.10)!important;border-radius:18px!important;
+  box-shadow:0 28px 90px rgba(0,0,0,.65)!important;overflow:hidden
+}
+
+.tt-modal-header-wrap{border-bottom:1px solid rgba(255,255,255,.10)!important;background:linear-gradient(180deg,rgba(255,255,255,.06),transparent)!important}
+.tt-modal-header{display:flex;align-items:center;gap:14px;width:100%}
+.tt-modal-title{font-weight:900;letter-spacing:.6px;font-size:25px;text-transform:uppercase}
+.tt-modal-subtitle{font-size:12px;color:rgba(255,255,255,.60);letter-spacing:.4px}
+
+.tt-modal-close-btn{margin-left:auto;padding:8px 14px!important;border-radius:12px!important;font-weight:900!important;border:1px solid rgba(255,255,255,.16)!important;background:rgba(255,255,255,.06)!important;color:rgba(255,255,255,.88)!important}
+.tt-modal-close-btn:hover{background:rgba(255,255,255,.10)!important;border-color:rgba(255,255,255,.24)!important;color:rgba(255,255,255,.96)!important}
+
+.tt-modal-gridwrap{border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,.10);background:rgba(0,0,0,.20)}
+.tt-modal-content .ag-theme-alpine-dark .ag-header-cell-menu-button{display:none!important}
+.tt-modal-content .ag-theme-alpine-dark .ag-cell,
+.tt-modal-content .ag-theme-alpine-dark .ag-header-cell-text{font-weight:900!important}
+
+.tt-modal-content .ag-theme-alpine-dark{ --ag-font-size: 14px; }
