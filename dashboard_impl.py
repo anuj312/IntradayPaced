@@ -118,7 +118,7 @@ SECTOR_DEFINITIONS = {
         "BAJAJ-AUTO", "ASHOKLEY",
         "MARUTI", "TVSMOTOR",
         "MOTHERSON", "SONACOMS",
-        "UNOMINDA", "TMPV",
+        "UNOMINDA", "TMPV", "HYUNDAI"
         "AMBER"
     ],
     "IT": [
@@ -179,7 +179,6 @@ SECTOR_DEFINITIONS = {
         "SBIN", "PNB", "BANKBARODA", "CANBK",
         "UNIONBANK", "BANKINDIA", "INDIANB",
     ],
-    
     "TELECOM": [
         "BHARTIARTL", "INDUSTOWER",
         "HAVELLS", "KEI", "POLYCAB",
@@ -563,9 +562,6 @@ CACHE: Dict[str, Any] = {
 
 
 def _snapshot_state(include_hot: bool = False) -> Dict[str, Any]:
-    """
-    Copy required state under LOCK, then compute outside lock.
-    """
     with LOCK:
         snap = {
             "price": dict(LAST_PRICE),
@@ -629,31 +625,78 @@ def _compute_rfactor_row_snap(token: int, snap: Dict[str, Any]) -> Optional[Dict
     day_high = ohlc.get("high")
     day_low = ohlc.get("low")
 
-    if prev_close is None or day_open is None:
+    if (
+        prev_close is None
+        or day_open is None
+        or day_high is None
+        or day_low is None
+    ):
         return None
 
     prev_close = float(prev_close)
     day_open = float(day_open)
+    day_high = float(day_high)
+    day_low = float(day_low)
+    ltp = float(ltp)
+
     if prev_close <= 0 or day_open <= 0 or ltp <= 0:
         return None
 
     gap_pct = ((day_open - prev_close) / prev_close) * 100.0
     pct_open = ((ltp - day_open) / day_open) * 100.0
-    range_today = (float(day_high) - float(day_low)) if (day_high is not None and day_low is not None) else 0.0
 
     st = (snap.get("daily") or {}).get(token) or {}
+
     avg_vol_20 = st.get("avg_vol_20")
     avg_range_20 = st.get("avg_range_20")
     avg_abs_oc_ret_20 = st.get("avg_abs_oc_ret_20")
+
     if not avg_vol_20 or not avg_range_20 or not avg_abs_oc_ret_20:
         return None
 
     eps = 1e-9
-    rvol = float(vol_today) / (float(avg_vol_20) + eps)
-    range_factor = max(0.0, float(range_today)) / (float(avg_range_20) + eps)
+
+    # --------------------------------------------------
+    # PACED RVOL (RVOLm)
+    # --------------------------------------------------
+    tf = _time_factor_ist_for_rvol(datetime.now(IST))
+    expected_vol = float(avg_vol_20) * tf
+    rvolm = float(vol_today) / (expected_vol + eps)
+
+    # --------------------------------------------------
+    # RANGE EXPANSION
+    # --------------------------------------------------
+    range_today = max(0.0, day_high - day_low)
+    range_factor = range_today / (float(avg_range_20) + eps)
+
+    # --------------------------------------------------
+    # PRICE MOVE FROM OPEN
+    # --------------------------------------------------
     move_factor = abs(float(pct_open)) / (float(avg_abs_oc_ret_20) + eps)
 
-    rfactor_val = rvol * range_factor * move_factor
+    # --------------------------------------------------
+    # BASE MOMENTUM
+    # --------------------------------------------------
+    rfactor_val = rvolm * range_factor * move_factor
+
+    # --------------------------------------------------
+    # POSITION INSIDE DAY RANGE
+    # --------------------------------------------------
+    range_span = max(day_high - day_low, eps)
+
+    position_in_range = (ltp - day_low) / range_span
+    position_in_range = max(0.0, min(1.0, position_in_range))
+
+    # --------------------------------------------------
+    # FRESHNESS PENALTY
+    # --------------------------------------------------
+    if pct_open >= 0:
+        freshness = position_in_range ** 3
+    else:
+        freshness = (1.0 - position_in_range) ** 3
+
+    rfactor_val *= freshness
+
     dirr = (1.0 if pct_open >= 0 else -1.0) * rfactor_val
 
     return {
@@ -703,19 +746,6 @@ def _compute_market_sentiment_proxy_snap(snap: Dict[str, Any]) -> Dict[str, Any]
         label = "NEUTRAL"
 
     return {"adv": adv, "dec": dec, "unch": unch, "total": total, "score": float(score), "label": label}
-
-
-def _compute_sector_aggregates_from_rr(rr_by_tok: Dict[int, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
-    tf = _time_factor_ist_for_rvol(datetime.now(IST))
-    out: Dict[str, Dict[str, float]] = {}
-
-    # For RVOLm metrics we need avg_vol_20; we will grab it from DAILY_STATS global snapshot
-    # but rr_by_tok doesn't include avg_vol_20. We can compute RVOLm from rr + daily stats snapshot
-    snap_daily = None
-    # NOTE: we intentionally read DAILY_STATS without LOCK here because this function is called
-    # from compute thread after snapshot; so pass in daily map when calling.
-    # (we will inject via closure in compute loop)
-    raise RuntimeError("internal: call _compute_sector_aggregates_from_rr_with_daily() instead")
 
 
 def _compute_sector_aggregates_from_rr_with_daily(
@@ -863,10 +893,6 @@ _compute_started = False
 
 
 def start_compute_loop_once():
-    """
-    Ultra-fast mode: precompute sector aggregates + leaderboards in background thread.
-    Dash callbacks become cheap dictionary reads.
-    """
     global _compute_started
     if _compute_started:
         return
@@ -1216,14 +1242,12 @@ def sector_modal_component():
         "getRowId": {"function": "params.data.Symbol"},
         "alwaysShowVerticalScroll": True,
         "animateRows": True,
-        # show ONLY funnel icon, hide hamburger menu
         "suppressHeaderMenuButton": True,
         "suppressHeaderFilterButton": False,
         "onGridReady": {"function": "params.api.sizeColumnsToFit();"},
         "onGridSizeChanged": {"function": "params.api.sizeColumnsToFit();"},
     }
 
-    # Header: title left, Close button right
     header = html.Div(
         [
             html.Div(id="sector-modal-title", children="SECTOR", className="tt-modal-title"),
@@ -1269,9 +1293,9 @@ def sector_modal_component():
         scrollable=True,
         backdrop=True,
         keyboard=True,
-        className="tt-modal",                    # dbc v1.6.0 compatible
-        contentClassName="tt-modal-content",     # dbc v1.6.0 compatible
-        backdropClassName="tt-modal-backdrop",   # dbc v1.6.0 compatible
+        className="tt-modal",
+        contentClassName="tt-modal-content",
+        backdropClassName="tt-modal-backdrop",
     )
 
 # =============================================================================
@@ -1303,7 +1327,7 @@ def sectors_page():
         {
             "colId": "rfactor",
             "field": "RFactor",
-            "headerName": "MOMENTUM",  # was RFACTOR
+            "headerName": "MOMENTUM",
             "cellRenderer": "RfactorPill",
             "minWidth": 125,
             "maxWidth": 170,
@@ -1417,7 +1441,6 @@ def sectors_page():
     )
 
 
-# --- Minimal VOLM page: Top15 BUY/SELL by RVOLm (computed on-demand; smaller page) ---
 def top15_buy_sell_rvolm_rows(n: int = 15):
     snap = _snapshot_state(include_hot=False)
     tf = _time_factor_ist_for_rvol(datetime.now(IST))
@@ -1569,10 +1592,7 @@ dash_app.layout = dbc.Container(
     fluid=True,
     children=[
         dcc.Location(id="url"),
-
-        # IMPORTANT: prevents full sectors re-render when URL changes only for modal
         dcc.Store(id="page-store"),
-
         dcc.Interval(id="top_refresh", interval=1000, n_intervals=0),
 
         html.Div(
@@ -1591,7 +1611,6 @@ dash_app.layout = dbc.Container(
         ),
 
         html.Div(id="app-body"),
-
         sector_modal_component(),
     ],
 )
@@ -1602,8 +1621,6 @@ dash_app.layout = dbc.Container(
 # =============================================================================
 def _classify_page(pathname: str) -> str:
     pn = (pathname or "").strip() or "/"
-
-    # Support both "with prefix" and "internal" paths
     volm_paths = {"/volm", "/volm/", f"{BASE}volm", f"{BASE}volm/"}
     oi_paths = {"/openinterest", "/openinterest/", f"{BASE}openinterest", f"{BASE}openinterest/"}
 
@@ -1690,7 +1707,6 @@ def update_top_stats(_):
         sm = dict(CACHE.get("sentiment") or {})
         pn = CACHE.get("pcr")
 
-    # ---- BIAS chip ----
     sent_label = str(sm.get("label") or "NEUTRAL").upper()
     sent_score = float(sm.get("score") or 0.0)
     adv = int(sm.get("adv", 0) or 0)
@@ -1711,7 +1727,6 @@ def update_top_stats(_):
         title=f"Adv {adv} • Dec {dec} • Unch {unch}",
     )
 
-    # ---- PCR chip ----
     if pn and pn.get("pcr") is not None:
         pcr = float(pn["pcr"])
         pcr_lbl = pcr_label_from_value(pcr)
@@ -2079,7 +2094,6 @@ def update_rfactor_leaderboards(_):
         return list(CACHE.get("top15_gainers") or []), list(CACHE.get("top15_losers") or [])
 
 
-
 @dash_app.callback(
     Output("volm-buy-grid", "rowData"),
     Output("volm-sell-grid", "rowData"),
@@ -2103,7 +2117,7 @@ async def _startup():
     seed_daily_stats_once(per_req_sleep=SEED_SLEEP_SEC)
     start_ticker_once()
     load_nfo_instruments_once()
-    start_compute_loop_once()  # <--- ULTRA-FAST precompute thread
+    start_compute_loop_once()
     await openinterest.on_startup()
 
 
