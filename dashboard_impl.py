@@ -1,12 +1,18 @@
-# app.py  (NO AUTH • NO FIREBASE • NO SUBSCRIPTIONS)
+# dashboard_impl.py
 #
-# Run (local):
-#   export KITE_API_KEY="..."
-#   export KITE_ACCESS_TOKEN="..."
-#   uvicorn app:app --reload --workers 1
+# TurboTrades Dashboard implementation (NO AUTH here)
+# - Exposes:
+#     server               -> Dash WSGI server (mounted by FastAPI wrapper at /dash)
+#     openinterest         -> optioninterest module (mounted by FastAPI wrapper at /openinterest)
+#     async _startup()     -> start threads + openinterest startup
+#     async _shutdown()    -> openinterest shutdown
 #
-# Render:
-#   Start command: uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1
+# Adds: Heatmap (Treemap) below Top 15 Gainers/Losers
+# - Color: %Change (from Open)
+# - Tile size: Turnover proxy = LTP * VolumeTraded
+# - Sector order: sorted by sector average momentum mean (DirR)
+# - Includes ALL sectors & ALL stocks exactly as in SECTOR_DEFINITIONS
+#   (so duplicates like NIFTY_50 are included too)
 
 import os
 import time
@@ -20,18 +26,17 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI
-from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
-from starlette.middleware.wsgi import WSGIMiddleware
 
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import dash_ag_grid as dag
 
+import plotly.graph_objects as go
+
 from kiteconnect import KiteConnect, KiteTicker
 
-# OpenInterest FastAPI app (mounted)
+# OpenInterest FastAPI app (mounted by wrapper)
 import optioninterest as openinterest
 
 
@@ -39,7 +44,7 @@ import optioninterest as openinterest
 # LOGGING
 # =============================================================================
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("turbotrades")
+log = logging.getLogger("turbotrades.dashboard")
 
 
 # =============================================================================
@@ -74,11 +79,99 @@ PCR_CACHE_TTL_SEC = int(os.getenv("PCR_CACHE_TTL_SEC", "20"))
 PCR_QUOTE_CHUNK = int(os.getenv("PCR_QUOTE_CHUNK", "180"))
 NIFTY_SPOT_SYMBOL = os.getenv("NIFTY_SPOT_SYMBOL", "NSE:NIFTY 50")
 
-# Background compute cadence (ultra-fast mode)
-COMPUTE_CORE_EVERY_SEC = float(os.getenv("COMPUTE_CORE_EVERY_SEC", "2.0"))   # sector agg, leaderboards, sentiment
-COMPUTE_HOT_EVERY_SEC = float(os.getenv("COMPUTE_HOT_EVERY_SEC", "5.0"))     # hot-now lists
-COMPUTE_PCR_EVERY_SEC = float(os.getenv("COMPUTE_PCR_EVERY_SEC", "5.0"))     # will still respect internal PCR cache
-COMPUTE_SLEEP_SEC = float(os.getenv("COMPUTE_SLEEP_SEC", "0.20"))            # loop sleep
+# Background compute cadence
+COMPUTE_CORE_EVERY_SEC = float(os.getenv("COMPUTE_CORE_EVERY_SEC", "2.0"))
+COMPUTE_HOT_EVERY_SEC = float(os.getenv("COMPUTE_HOT_EVERY_SEC", "5.0"))
+COMPUTE_PCR_EVERY_SEC = float(os.getenv("COMPUTE_PCR_EVERY_SEC", "5.0"))
+COMPUTE_SLEEP_SEC = float(os.getenv("COMPUTE_SLEEP_SEC", "0.20"))
+
+SECTOR_PLOT_H_PX = int(os.getenv("SECTOR_PLOT_H_PX", "350"))
+
+# =============================================================================
+# HEATMAP (Treemap) — demo-style like heatmap_example.py
+# =============================================================================
+HEATMAP_TOP_N_PER_SECTOR = int(os.getenv("HEATMAP_TOP_N_PER_SECTOR", "18"))
+HEATMAP_ADD_OTHERS = os.getenv("HEATMAP_ADD_OTHERS", "1").strip().lower() not in ("0", "false", "no")
+HEATMAP_PACKING = os.getenv("HEATMAP_PACKING", "squarify").strip()
+HEATMAP_SECTOR_POWER = float(os.getenv("HEATMAP_SECTOR_POWER", "2.8"))
+
+# Stock sizing metric inside sector:
+#   - "abs_pct": big movers up/down
+#   - "pos_pct": only gainers big
+HEATMAP_STOCK_SIZE_METRIC = os.getenv("HEATMAP_STOCK_SIZE_METRIC", "abs_pct").strip()  # abs_pct | pos_pct
+HEATMAP_MAX_STOCK_LABEL_CHARS = int(os.getenv("HEATMAP_MAX_STOCK_LABEL_CHARS", "9"))
+
+
+def _unicode_bold_char(c: str) -> str:
+    o = ord(c)
+    if 65 <= o <= 90:   # A-Z
+        return chr(0x1D400 + (o - 65))
+    if 97 <= o <= 122:  # a-z
+        return chr(0x1D41A + (o - 97))
+    if 48 <= o <= 57:   # 0-9
+        return chr(0x1D7CE + (o - 48))
+    return c
+
+
+def unicode_bold(s: str) -> str:
+    # Plotly treemap tiles don't reliably render <b>...</b>, so use Unicode bold.
+    return "".join(_unicode_bold_char(c) for c in str(s))
+
+
+def heatmap_short_symbol(sym: str, max_len: int = HEATMAP_MAX_STOCK_LABEL_CHARS) -> str:
+    sym = str(sym)
+    if sym == "OTHERS":
+        return sym
+    if len(sym) <= max_len:
+        return sym
+    return sym[: max_len - 1] + "…"
+
+
+def _topn_plus_others_heatmap(sdf: pd.DataFrame, n: int, add_others: bool, size_col: str) -> pd.DataFrame:
+    """
+    sdf must already be sorted (we sort by pct desc before calling).
+    Adds an OTHERS leaf:
+      - size metric = sum(size_col)
+      - pct color = weighted avg pct by size metric (fallback if weights ~0)
+      - dirr = weighted avg dirr
+      - turnover = sum(turnover)
+    """
+    if n <= 0 or len(sdf) <= n:
+        return sdf
+
+    top = sdf.iloc[:n].copy()
+    rest = sdf.iloc[n:].copy()
+
+    if add_others and not rest.empty:
+        wsum = float(rest[size_col].sum())
+        if wsum <= 1e-9:
+            w = (rest["abs_pct"] + 0.01).astype(float)
+            wsum = float(w.sum())
+        else:
+            w = rest[size_col].astype(float)
+
+        others_pct = float((rest["pct"].astype(float) * w).sum() / (wsum + 1e-9))
+        others_dirr = float((rest["dirr"].astype(float) * w).sum() / (wsum + 1e-9))
+        others_turn = float(rest["turnover"].sum())
+
+        top = pd.concat(
+            [
+                top,
+                pd.DataFrame([{
+                    "sector_key": str(rest.iloc[0]["sector_key"]),
+                    "sector_label": str(rest.iloc[0]["sector_label"]),
+                    "symbol": "OTHERS",
+                    "pct": others_pct,
+                    "dirr": others_dirr,
+                    "turnover": others_turn,
+                    "abs_pct": float(rest["abs_pct"].sum()),
+                    "pos_pct": float(rest["pos_pct"].sum()),
+                }])
+            ],
+            ignore_index=True,
+        )
+
+    return top
 
 
 # =============================================================================
@@ -118,8 +211,7 @@ SECTOR_DEFINITIONS = {
         "BAJAJ-AUTO", "ASHOKLEY",
         "MARUTI", "TVSMOTOR",
         "MOTHERSON", "SONACOMS",
-        "UNOMINDA", "TMPV", "HYUNDAI"
-        "AMBER"
+        "UNOMINDA", "TMPV", "HYUNDAI", "AMBER"
     ],
     "IT": [
         "INFY", "TCS", "HCLTECH", "WIPRO",
@@ -175,7 +267,7 @@ SECTOR_DEFINITIONS = {
         "IDFCFIRSTB", "FEDERALBNK", "INDUSINDBK",
         "AUBANK", "BANDHANBNK", "RBLBANK",
     ],
-     "PSUBANK": [
+    "PSUBANK": [
         "SBIN", "PNB", "BANKBARODA", "CANBK",
         "UNIONBANK", "BANKINDIA", "INDIANB",
     ],
@@ -212,6 +304,7 @@ SECTOR_DEFINITIONS = {
 
 ALL_SYMBOLS = sorted(set(sum(SECTOR_DEFINITIONS.values(), [])))
 
+# Load instruments (NSE) and map to tokens/names
 ins = pd.DataFrame(kite.instruments("NSE"))
 ins = ins[ins["tradingsymbol"].isin(ALL_SYMBOLS)].copy()
 symbol_to_token: Dict[str, int] = dict(zip(ins["tradingsymbol"], ins["instrument_token"]))
@@ -540,7 +633,7 @@ def pcr_label_from_value(pcr: float) -> str:
 
 
 # =============================================================================
-# SNAPSHOTS + ULTRA-FAST BACKGROUND COMPUTE CACHE
+# SNAPSHOTS + BACKGROUND COMPUTE CACHE
 # =============================================================================
 CACHE_LOCK = threading.Lock()
 CACHE: Dict[str, Any] = {
@@ -551,6 +644,7 @@ CACHE: Dict[str, Any] = {
     "hvhr_losers": [],
     "hot_gainers": [],
     "hot_losers": [],
+    "heatmap_rows": [],  # <--- Heatmap data
     "sentiment": {"adv": 0, "dec": 0, "unch": 0, "total": 0, "score": 0.0, "label": "NEUTRAL"},
     "pcr": None,
     "updated": {
@@ -625,12 +719,7 @@ def _compute_rfactor_row_snap(token: int, snap: Dict[str, Any]) -> Optional[Dict
     day_high = ohlc.get("high")
     day_low = ohlc.get("low")
 
-    if (
-        prev_close is None
-        or day_open is None
-        or day_high is None
-        or day_low is None
-    ):
+    if prev_close is None or day_open is None or day_high is None or day_low is None:
         return None
 
     prev_close = float(prev_close)
@@ -646,7 +735,6 @@ def _compute_rfactor_row_snap(token: int, snap: Dict[str, Any]) -> Optional[Dict
     pct_open = ((ltp - day_open) / day_open) * 100.0
 
     st = (snap.get("daily") or {}).get(token) or {}
-
     avg_vol_20 = st.get("avg_vol_20")
     avg_range_20 = st.get("avg_range_20")
     avg_abs_oc_ret_20 = st.get("avg_abs_oc_ret_20")
@@ -656,47 +744,33 @@ def _compute_rfactor_row_snap(token: int, snap: Dict[str, Any]) -> Optional[Dict
 
     eps = 1e-9
 
-    # --------------------------------------------------
     # PACED RVOL (RVOLm)
-    # --------------------------------------------------
     tf = _time_factor_ist_for_rvol(datetime.now(IST))
     expected_vol = float(avg_vol_20) * tf
     rvolm = float(vol_today) / (expected_vol + eps)
 
-    # --------------------------------------------------
     # RANGE EXPANSION
-    # --------------------------------------------------
     range_today = max(0.0, day_high - day_low)
     range_factor = range_today / (float(avg_range_20) + eps)
 
-    # --------------------------------------------------
     # PRICE MOVE FROM OPEN
-    # --------------------------------------------------
     move_factor = abs(float(pct_open)) / (float(avg_abs_oc_ret_20) + eps)
 
-    # --------------------------------------------------
     # BASE MOMENTUM
-    # --------------------------------------------------
     rfactor_val = rvolm * range_factor * move_factor
 
-    # --------------------------------------------------
     # POSITION INSIDE DAY RANGE
-    # --------------------------------------------------
     range_span = max(day_high - day_low, eps)
-
     position_in_range = (ltp - day_low) / range_span
     position_in_range = max(0.0, min(1.0, position_in_range))
 
-    # --------------------------------------------------
     # FRESHNESS PENALTY
-    # --------------------------------------------------
     if pct_open >= 0:
         freshness = position_in_range ** 3
     else:
         freshness = (1.0 - position_in_range) ** 3
 
     rfactor_val *= freshness
-
     dirr = (1.0 if pct_open >= 0 else -1.0) * rfactor_val
 
     return {
@@ -841,9 +915,6 @@ def _quantile_threshold(values: List[float], q: float) -> Optional[float]:
 
 
 def _compute_hot_row_from_series(series: List[Tuple[float, float, Optional[float]]]) -> Optional[dict]:
-    """
-    series: list[(epoch, ltp, cumvol)]
-    """
     if not series or len(series) < 2:
         return None
 
@@ -906,7 +977,7 @@ def start_compute_loop_once():
         while True:
             now = time.time()
 
-            # ---- CORE (rfactor rows -> leaderboards + sector aggregates + sentiment) ----
+            # ---- CORE ----
             if (now - last_core) >= COMPUTE_CORE_EVERY_SEC:
                 try:
                     snap = _snapshot_state(include_hot=False)
@@ -932,7 +1003,7 @@ def start_compute_loop_once():
                         })
                         rfactor_vals.append(float(rr["rfactor"]))
 
-                    # Top gainers/losers by RFactor
+                    # Top gainers/losers by RFactor (within +/- movers)
                     gainers = [r for r in rows_basic if float(r["%Change"]) > 0]
                     losers = [r for r in rows_basic if float(r["%Change"]) < 0]
                     gainers.sort(key=lambda r: float(r["RFactor"]), reverse=True)
@@ -940,7 +1011,7 @@ def start_compute_loop_once():
                     top15_gainers = gainers[:15]
                     top15_losers = losers[:15]
 
-                    # HVHR (top quantile by RFactor, then sort by Vol)
+                    # HVHR bucket
                     thr = _quantile_threshold(rfactor_vals, float(HVHR_RFACTOR_Q)) if rfactor_vals else None
                     if thr is None:
                         hvhr_gainers, hvhr_losers = [], []
@@ -953,14 +1024,65 @@ def start_compute_loop_once():
                         hvhr_gainers = bucket_g[: int(HVHR_N)]
                         hvhr_losers = bucket_l[: int(HVHR_N)]
 
-                    # Sector aggregates
+                    # Sector aggregates (DirR = avg momentum mean)
                     sector_agg = _compute_sector_aggregates_from_rr_with_daily(
                         rr_by_tok=rr_by_tok,
                         daily_map=(snap.get("daily") or {}),
                     )
 
-                    # Sentiment
+                    # Market sentiment
                     sentiment = _compute_market_sentiment_proxy_snap(snap)
+
+                    # -------------------------------
+                    # HEATMAP ROWS (ALL sectors+stocks)
+                    # Color: %Change
+                    # Size : Turnover proxy = LTP * VolumeTraded
+                    # Sector order by DirR (avg momentum mean)
+                    # Stocks within sector by DirR desc
+                    # -------------------------------
+                    sector_order = sorted(
+                        SECTOR_DEFINITIONS.keys(),
+                        key=lambda sec: float((sector_agg.get(sec) or {}).get("DirR") or 0.0),
+                        reverse=True,
+                    )
+
+                    heat_rows: List[dict] = []
+                    for sec in sector_order:
+                        syms = SECTOR_DEFINITIONS.get(sec, [])
+                        # sort symbols by dirr desc (if we have rr)
+                        sym_scored: List[Tuple[float, str]] = []
+                        for sym in syms:
+                            tok = symbol_to_token.get(sym)
+                            if not tok:
+                                continue
+                            rr = rr_by_tok.get(tok)
+                            if not rr:
+                                continue
+                            sym_scored.append((float(rr.get("dirr") or 0.0), sym))
+                        sym_scored.sort(key=lambda x: x[0], reverse=True)
+
+                        for _dirr, sym in sym_scored:
+                            tok = symbol_to_token.get(sym)
+                            if not tok:
+                                continue
+                            rr = rr_by_tok.get(tok)
+                            if not rr:
+                                continue
+
+                            ltp = float(rr["ltp"])
+                            vol = float(rr["vol_today"])
+                            turnover = ltp * vol
+                            if turnover <= 0:
+                                continue
+
+                            heat_rows.append({
+                                "sector_key": sec,
+                                "sector_label": sec.replace("_", " ").upper(),
+                                "symbol": sym,
+                                "pct": float(rr["pct_open"]),   # color
+                                "dirr": float(rr["dirr"]),      # for sorting/hover
+                                "value": float(turnover),       # size
+                            })
 
                     with CACHE_LOCK:
                         CACHE["sector_agg"] = sector_agg
@@ -969,6 +1091,7 @@ def start_compute_loop_once():
                         CACHE["hvhr_gainers"] = hvhr_gainers
                         CACHE["hvhr_losers"] = hvhr_losers
                         CACHE["sentiment"] = sentiment
+                        CACHE["heatmap_rows"] = heat_rows
                         CACHE["updated"]["core"] = now
 
                 except Exception:
@@ -1288,7 +1411,7 @@ def sector_modal_component():
         id="sector-modal",
         is_open=False,
         size="xl",
-        fullscreen="md-down", 
+        fullscreen="md-down",
         centered=True,
         scrollable=True,
         backdrop=True,
@@ -1297,6 +1420,7 @@ def sector_modal_component():
         contentClassName="tt-modal-content",
         backdropClassName="tt-modal-backdrop",
     )
+
 
 # =============================================================================
 # PAGES
@@ -1425,6 +1549,17 @@ def sectors_page():
                     ),
                 ],
                 className="g-2",
+            ),
+
+            # ---------------------------
+            # HEATMAP (below Top 15)
+            # ---------------------------
+            html.Hr(),
+            html.H6("Heatmap", className="mt-1"),
+            dcc.Graph(
+                id="market-heatmap",
+                config={"displayModeBar": True, "displaylogo": False},
+                style={"height": "68vh", "width": "100%"},
             ),
 
             html.Hr(),
@@ -1586,7 +1721,7 @@ def volm_page():
 
 
 # =============================================================================
-# DASH ROOT LAYOUT (modal lives here)
+# DASH ROOT LAYOUT
 # =============================================================================
 dash_app.layout = dbc.Container(
     fluid=True,
@@ -1617,7 +1752,7 @@ dash_app.layout = dbc.Container(
 
 
 # =============================================================================
-# ROUTER (no rebuild between /dash/ and /dash/sector/<x>)
+# ROUTER
 # =============================================================================
 def _classify_page(pathname: str) -> str:
     pn = (pathname or "").strip() or "/"
@@ -1780,7 +1915,7 @@ def update_top_stats(_):
 
 
 # =============================================================================
-# SECTOR BARS (render only; data from CACHE)
+# SECTOR BARS
 # =============================================================================
 @dash_app.callback(
     Output("sector-bars", "children"),
@@ -1831,7 +1966,7 @@ def render_sector_bars(_n, sort_by):
         zero_pct = ((tick_max - 0.0) / axis_span) * 100.0
         zero_pct = max(0.0, min(100.0, zero_pct))
 
-        plot_h = int(os.getenv("SECTOR_PLOT_H_PX", "350"))
+        plot_h = SECTOR_PLOT_H_PX
         pos_px = plot_h * (zero_pct / 100.0)
         neg_px = plot_h - pos_px
 
@@ -1911,7 +2046,7 @@ def render_sector_bars(_n, sort_by):
 
 
 # =============================================================================
-# SECTOR MODAL (on-demand; small list -> ok)
+# SECTOR MODAL
 # =============================================================================
 def sector_rows_sorted(sector: str, sort_by: str = "RFactor"):
     rows = []
@@ -1992,7 +2127,7 @@ def sync_sector_modal(pathname, _tick):
 
 
 # =============================================================================
-# DIALS + LEADERBOARDS (read from CACHE only)
+# DIALS + LEADERBOARDS
 # =============================================================================
 def _state_class(label: str) -> str:
     L = (label or "").upper().strip()
@@ -2104,15 +2239,178 @@ def update_volm_grids(_):
 
 
 # =============================================================================
-# FASTAPI APP
+# HEATMAP CALLBACK (Treemap) — demo-style like heatmap_example.py
 # =============================================================================
-app = FastAPI(title="TurboTrades (No Auth)")
+@dash_app.callback(
+    Output("market-heatmap", "figure"),
+    Input("refresh_sectors", "n_intervals"),
+)
+def update_market_heatmap(_):
+    with CACHE_LOCK:
+        rows = list(CACHE.get("heatmap_rows") or [])
 
-HERE = Path(__file__).resolve().parent
-THEME_PATH = HERE / "assets" / "theme.css"
+    if not rows:
+        fig = go.Figure()
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=8, r=8, t=8, b=8),
+            annotations=[dict(text="Loading heatmap…", showarrow=False, x=0.5, y=0.5)],
+        )
+        return fig
 
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return go.Figure()
 
-@app.on_event("startup")
+    # rows contain: sector_key, sector_label, symbol, pct, dirr, value(turnover proxy)
+    if "turnover" not in df.columns:
+        df["turnover"] = df["value"].astype(float)
+
+    df["pct"] = df["pct"].astype(float)
+    df["dirr"] = df["dirr"].astype(float)
+    df["turnover"] = df["turnover"].astype(float)
+
+    # demo-style sizing metrics
+    df["abs_pct"] = df["pct"].abs()
+    df["pos_pct"] = df["pct"].clip(lower=0.0)
+
+    size_col = HEATMAP_STOCK_SIZE_METRIC if HEATMAP_STOCK_SIZE_METRIC in ("abs_pct", "pos_pct") else "abs_pct"
+
+    # 1) Sector order by mean %Change DESC
+    # 1) Sector order by mean MOMENTUM (DirR) DESC
+    sec_mean_dirr = df.groupby("sector_key")["dirr"].mean().to_dict()
+    sector_order = sorted(
+    df["sector_key"].unique().tolist(),
+    key=lambda s: float(sec_mean_dirr.get(s, 0.0)),
+    reverse=True,
+)
+    nsec = len(sector_order)
+
+    # 2) Sector size by rank^POWER
+    sector_weight: Dict[str, float] = {}
+    for i, sec in enumerate(sector_order):
+        rank_val = float(max(1, nsec - i))
+        sector_weight[sec] = rank_val ** float(HEATMAP_SECTOR_POWER)
+
+    # 3) Color range symmetric around 0
+    mx = float(max(0.5, df["pct"].abs().max()))
+
+    # root arrays
+    labels = ["MARKET"]   # hover label (full)
+    texts = [""]          # tile text (bold sector + truncated stocks)
+    ids = ["root"]
+    parents = [""]
+    values = [float(sum(sector_weight.values()))]
+    colors = [0.0]
+    customdata = [[0.0, 0.0, 0.0]]  # [turnover, dirr, pct]
+
+    for sec in sector_order:
+        sdf = df[df["sector_key"] == sec].copy()
+        if sdf.empty:
+            continue
+
+        # Stock order inside sector by %Change DESC
+        sdf.sort_values("pct", ascending=False, inplace=True)
+
+        # Limit + OTHERS
+        sdf = _topn_plus_others_heatmap(
+            sdf,
+            n=int(HEATMAP_TOP_N_PER_SECTOR),
+            add_others=bool(HEATMAP_ADD_OTHERS),
+            size_col=size_col,
+        )
+
+        sec_label = str(sdf.iloc[0]["sector_label"])
+        sec_id = f"sec:{sec}"
+        w_sec = float(sector_weight.get(sec, 1.0))
+
+        # Sector node
+        labels.append(sec_label)
+        texts.append(unicode_bold(sec_label))
+        ids.append(sec_id)
+        parents.append("root")
+        values.append(w_sec)
+        colors.append(float(sdf["pct"].mean()))
+        customdata.append([
+            float(sdf["turnover"].sum()),
+            float(sdf["dirr"].mean() if len(sdf) else 0.0),
+            float(sdf["pct"].mean() if len(sdf) else 0.0),
+        ])
+
+        # Stock sizing INSIDE sector based on abs_pct / pos_pct
+        weights = sdf[size_col].astype(float)
+        if float(weights.sum()) <= 1e-9:
+            weights = (sdf["abs_pct"].astype(float) + 0.01)
+        wsum = float(weights.sum())
+
+        for (_, r), wi in zip(sdf.iterrows(), weights.tolist()):
+            sym = str(r["symbol"])
+            leaf_area = (float(wi) / (wsum + 1e-9)) * w_sec
+
+            labels.append(sym)                       # full for hover
+            texts.append(heatmap_short_symbol(sym))  # truncated for tile
+            ids.append(f"{sec}:{sym}")               # unique per sector (symbol can repeat)
+            parents.append(sec_id)
+            values.append(float(leaf_area))
+            colors.append(float(r["pct"]))
+            customdata.append([float(r["turnover"]), float(r["dirr"]), float(r["pct"])])
+
+    fig = go.Figure(
+        go.Treemap(
+            labels=labels,
+            text=texts,
+            texttemplate="%{text}",
+            textinfo="text",
+            ids=ids,
+            parents=parents,
+            values=values,
+            customdata=customdata,
+            marker=dict(
+                colors=colors,
+                colorscale=[
+                    [0.0, "#8b1e2d"],  # red
+                    [0.5, "#2b2b2b"],  # neutral
+                    [1.0, "#1f9d55"],  # green
+                ],
+                cmin=-mx,
+                cmax=mx,
+                cmid=0.0,
+                showscale=False, 
+                line=dict(width=1.2, color="rgba(255,255,255,0.22)"),
+            ),
+            branchvalues="total",
+            sort=False,
+            tiling=dict(packing=HEATMAP_PACKING, pad=2),
+            hovertemplate=(
+                "<b>%{label}</b>"
+                "<br>%Chg: %{color:.2f}%"
+                "<br>Turnover: %{customdata[0]:,.0f}"
+                "<br>DirR: %{customdata[1]:.2f}"
+                "<extra></extra>"
+            ),
+            pathbar=dict(visible=False),
+        )
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=8, r=8, t=8, b=8),
+        uniformtext_minsize=8,
+        uniformtext_mode="hide",
+        title=(
+            f"Heatmap • sector_sort=mean%chg • sector_size=rank^{HEATMAP_SECTOR_POWER} • "
+            f"stock_sort=%chg • stock_size={size_col}"
+        ),
+    )
+    return fig
+
+# =============================================================================
+# STARTUP/SHUTDOWN FOR WRAPPER
+# =============================================================================
 async def _startup():
     seed_daily_stats_once(per_req_sleep=SEED_SLEEP_SEC)
     start_ticker_once()
@@ -2121,63 +2419,5 @@ async def _startup():
     await openinterest.on_startup()
 
 
-@app.on_event("shutdown")
 async def _shutdown():
     await openinterest.on_shutdown()
-
-
-@app.get("/dash")
-def dash_no_slash():
-    return RedirectResponse(url="/dash/", status_code=307)
-
-
-@app.get("/health")
-def health():
-    with LOCK:
-        offline = (time.time() - LAST_TICK_TS) > 10 if LAST_TICK_TS else True
-        base = {
-            "status": "ok",
-            "offline": offline,
-            "seed_20d_done": DAILY_SEED_DONE,
-            "seed_20d_progress": DAILY_SEED_PROGRESS,
-            "seed_20d_errors": DAILY_SEED_ERRORS,
-            "tps": round(_get_tps(), 3),
-            "total_ticks": TOTAL_TICKS,
-            "last_tick_time": (LAST_TICK_DT.isoformat() if LAST_TICK_DT else None),
-            "hot_history_tokens": len(HOT_HISTORY),
-            "eod_tokens": len(EOD_SNAPSHOT),
-            "nfo_loaded": bool(NFO_INS_DF is not None),
-            "nfo_error": NFO_LOAD_ERR,
-        }
-    with CACHE_LOCK:
-        base["cache_updated"] = dict(CACHE.get("updated") or {})
-        base["cache_sizes"] = {
-            "sector_agg": len(CACHE.get("sector_agg") or {}),
-            "top15_gainers": len(CACHE.get("top15_gainers") or []),
-            "top15_losers": len(CACHE.get("top15_losers") or []),
-            "hvhr_gainers": len(CACHE.get("hvhr_gainers") or []),
-            "hvhr_losers": len(CACHE.get("hvhr_losers") or []),
-            "hot_gainers": len(CACHE.get("hot_gainers") or []),
-            "hot_losers": len(CACHE.get("hot_losers") or []),
-            "pcr_ready": bool(CACHE.get("pcr")),
-        }
-    return base
-
-
-@app.get("/theme.css")
-def theme_css():
-    if THEME_PATH.exists():
-        return FileResponse(THEME_PATH, media_type="text/css")
-    return JSONResponse({"error": "theme.css not found"}, status_code=404)
-
-
-@app.get("/")
-def root():
-    return RedirectResponse(url="/dash/", status_code=307)
-
-
-# Mount OpenInterest FastAPI app (websocket-capable)
-app.mount("/openinterest", openinterest.app)
-
-# Mount Dash (WSGI)
-app.mount("/dash", WSGIMiddleware(server))
