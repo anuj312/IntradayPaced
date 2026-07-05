@@ -1734,11 +1734,33 @@ dash_app.layout = dbc.Container(
             dbc.Row(
                 [
                     dbc.Col(
-                        html.Div([html.Img(src=dash.get_asset_url("turbotrades.svg"), className="tt-logo")],
-                                 className="tt-brand"),
+                        html.Div(
+                            [
+                                html.Img(
+                                    src=dash.get_asset_url("turbotrades.svg"),
+                                    className="tt-logo",
+                                )
+                            ],
+                            className="tt-brand",
+                        ),
                         width=True,
                     ),
+
                     dbc.Col(html.Div(id="top-stats"), width="auto"),
+
+                    # --- Logout button (top-right) ---
+                    dbc.Col(
+                        dbc.Button(
+                            "Logout",
+                            href="/auth/logout",   # FastAPI logout
+                            external_link=True,    # do a normal navigation (not Dash routing)
+                            color="danger",
+                            outline=True,
+                            size="sm",
+                            className="tt-logout-btn",
+                        ),
+                        width="auto",
+                    ),
                 ],
                 className="align-items-center g-2",
             ),
@@ -1749,7 +1771,6 @@ dash_app.layout = dbc.Container(
         sector_modal_component(),
     ],
 )
-
 
 # =============================================================================
 # ROUTER
