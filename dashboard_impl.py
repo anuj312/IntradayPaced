@@ -1754,7 +1754,7 @@ dash_app.layout = dbc.Container(
                             "LogOff",
                             href="/auth/logout",   # FastAPI logout
                             external_link=True,    # do a normal navigation (not Dash routing)
-                            color="secondary",
+                            color="danger",
                             outline=True,
                             size="sm",
                             className="tt-logout-btn",
