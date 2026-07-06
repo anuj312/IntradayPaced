@@ -257,7 +257,7 @@ def build_market_heatmap_figure(rows: List[Dict[str, Any]]) -> go.Figure:
                 "<br>DirR: %{customdata[1]:.2f}"
                 "<extra></extra>"
             ),
-            pathbar=dict(visible=False, thickness=0),
+            pathbar=dict(visible=False),
         )
     )
 
