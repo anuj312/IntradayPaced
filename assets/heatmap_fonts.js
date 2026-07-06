@@ -13,7 +13,7 @@
         const textEl = slice.querySelector("text");
         if (!textEl) return;
 
-        textEl.style.fontSize = isSector ? "18px" : "10px";
+        textEl.style.fontSize = isSector ? "14px" : "10px";
         textEl.style.fontWeight = isSector ? "800" : "500";
       });
     } catch (e) {
