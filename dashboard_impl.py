@@ -93,7 +93,7 @@ SECTOR_PLOT_H_PX = int(os.getenv("SECTOR_PLOT_H_PX", "350"))
 HEATMAP_TOP_N_PER_SECTOR = int(os.getenv("HEATMAP_TOP_N_PER_SECTOR", "18"))
 HEATMAP_ADD_OTHERS = os.getenv("HEATMAP_ADD_OTHERS", "1").strip().lower() not in ("0", "false", "no")
 HEATMAP_PACKING = os.getenv("HEATMAP_PACKING", "squarify").strip()
-HEATMAP_SECTOR_POWER = float(os.getenv("HEATMAP_SECTOR_POWER", "2.8"))
+HEATMAP_SECTOR_POWER = float(os.getenv("HEATMAP_SECTOR_POWER", "2.5"))
 
 # Stock sizing metric inside sector:
 #   - "abs_pct": big movers up/down
@@ -2320,6 +2320,7 @@ def update_market_heatmap(_):
     mx = float(max(0.5, df["pct"].abs().max()))
 
     # root arrays
+    labels = ["MARKET"]   # hover label (full)
     texts = [""]          # tile text (bold sector + truncated stocks)
     ids = ["root"]
     parents = [""]
