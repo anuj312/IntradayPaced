@@ -1394,7 +1394,7 @@ def sectors_page():
 
     return html.Div(
         [
-            dcc.Interval(id="refresh_sectors", interval=2000, n_intervals=0),
+            dcc.Interval(id="refresh_sectors", interval=5000, n_intervals=0),
 
             dbc.Row(
                 [
@@ -1578,7 +1578,7 @@ def volm_page():
 
     return html.Div(
         [
-            dcc.Interval(id="refresh_volm", interval=3000, n_intervals=0),
+            dcc.Interval(id="refresh_volm", interval=5000, n_intervals=0),
 
             dbc.Row(
                 [
@@ -1639,7 +1639,7 @@ dash_app.layout = dbc.Container(
     children=[
         dcc.Location(id="url"),
         dcc.Store(id="page-store"),
-        dcc.Interval(id="top_refresh", interval=1000, n_intervals=0),
+        dcc.Interval(id="top_refresh", interval=5000, n_intervals=0),
 
         html.Div(
             dbc.Row(
