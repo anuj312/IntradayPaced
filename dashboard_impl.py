@@ -1403,9 +1403,9 @@ def sectors_page():
                         dbc.RadioItems(
                             id="sectors-sort",
                             options=[
-                                {"label": "RVOLm", "value": "RVOLm"},
-                                {"label": "RVOLm Mean", "value": "RVOLmMean"},
-                                {"label": "Momentum (mean)", "value": "DirR"},
+                                {"label": "Sort: RVOLm", "value": "RVOLm"},
+                                {"label": "Sort: RVOLm Mean", "value": "RVOLmMean"},
+                                {"label": "Sort: Momentum (mean)", "value": "DirR"},
                             ],
                             value="DirR",
                             inline=True,
