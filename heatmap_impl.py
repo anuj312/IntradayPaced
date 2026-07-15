@@ -1,9 +1,14 @@
 # heatmap_impl.py
 #
 # Plotly Treemap Heatmap builder
-# - Tight packing (no weird empty remainder space)
-# - Leaf colors: deep red/green like your screenshot (custom mapping)
-# - Sector headers are drawn in JS (assets/heatmap_fonts.js)
+# - Tight packing (branchvalues="total")
+# - Leaf colors: deep red/green (custom)
+# - Sector headers drawn in JS (assets/heatmap_fonts.js)
+#
+# Per sector:
+#   1) SELECT: Top N by abs(%Change) so big losers are included
+#   2) ORDER: Biggest tiles first (size_col DESC), then smaller
+#      (OTHERS, if present, forced to last)
 
 import os
 from typing import Any, Dict, List, Tuple
@@ -12,6 +17,9 @@ import pandas as pd
 import plotly.graph_objects as go
 
 
+# =============================================================================
+# CONFIG
+# =============================================================================
 HEATMAP_TOP_N_PER_SECTOR = int(os.getenv("HEATMAP_TOP_N_PER_SECTOR", "18"))
 HEATMAP_ADD_OTHERS = os.getenv("HEATMAP_ADD_OTHERS", "0").strip().lower() not in ("0", "false", "no")
 HEATMAP_PACKING = os.getenv("HEATMAP_PACKING", "squarify").strip()
@@ -25,6 +33,9 @@ _BG = "#000000"
 _LINE = "#000000"
 
 
+# =============================================================================
+# HELPERS
+# =============================================================================
 def _empty_fig(msg: str) -> go.Figure:
     fig = go.Figure()
     fig.update_layout(
@@ -84,8 +95,7 @@ def _lerp_color(c0: str, c1: str, t: float) -> str:
 
 def pct_to_color(pct: float, mx: float) -> str:
     """
-    Deep red for negatives, bright green for positives, near-black around 0.
-    Matches the "mostly maroon" look with a few green pops.
+    Deep maroon for negatives, bright green for positives, near-black around 0.
     """
     if mx <= 1e-9:
         return "#151515"
@@ -93,18 +103,23 @@ def pct_to_color(pct: float, mx: float) -> str:
     v = float(pct)
     t = min(1.0, abs(v) / mx)
 
-    # make small moves darker; big moves pop more
+    # small moves darker, big moves pop
     t = t ** 0.65
 
     if v > 0:
         return _lerp_color("#0b2416", "#1fa83f", t)
     if v < 0:
         return _lerp_color("#2a1417", "#9b2f3a", t)
-
     return "#111111"
 
 
 def _topn_plus_others_heatmap(sdf: pd.DataFrame, n: int, add_others: bool, size_col: str) -> pd.DataFrame:
+    """
+    sdf must already be sorted by abs_pct DESC (selection order).
+    - Always keeps top-n.
+    - If add_others=True, adds an "OTHERS" aggregate row for the rest.
+    - If add_others=False, rest are dropped.
+    """
     if n <= 0 or len(sdf) <= n:
         return sdf
 
@@ -143,6 +158,9 @@ def _topn_plus_others_heatmap(sdf: pd.DataFrame, n: int, add_others: bool, size_
     return top
 
 
+# =============================================================================
+# MAIN FIGURE BUILDER
+# =============================================================================
 def build_market_heatmap_figure(rows: List[Dict[str, Any]]) -> go.Figure:
     if not rows:
         return _empty_fig("Heatmap warming up…")
@@ -166,6 +184,7 @@ def build_market_heatmap_figure(rows: List[Dict[str, Any]]) -> go.Figure:
     if df.empty:
         return _empty_fig("Heatmap: waiting…")
 
+    # sizing helper columns
     df["abs_pct"] = df["pct"].abs()
     df["pos_pct"] = df["pct"].clip(lower=0.0)
 
@@ -203,43 +222,56 @@ def build_market_heatmap_figure(rows: List[Dict[str, Any]]) -> go.Figure:
     colors: List[str] = []
     customdata: List[List[float]] = []  # [turnover, dirr, pct]
 
+    top_n = int(HEATMAP_TOP_N_PER_SECTOR)
+    add_others = bool(HEATMAP_ADD_OTHERS)
+
     for sec in sector_order:
         sdf = df[df["sector_key"] == sec].copy()
         if sdf.empty:
             continue
 
-        # STOCK sort: %Change DESC (as you want)
-        sdf.sort_values("pct", ascending=False, inplace=True)
+        # 1) SELECT by abs move so big losers are included
+        sdf.sort_values("abs_pct", ascending=False, inplace=True)
 
-        sdf = _topn_plus_others_heatmap(
-            sdf,
-            n=int(HEATMAP_TOP_N_PER_SECTOR),
-            add_others=bool(HEATMAP_ADD_OTHERS),
-            size_col=size_col,
+        if top_n > 0:
+            sdf = _topn_plus_others_heatmap(sdf, n=top_n, add_others=add_others, size_col=size_col)
+
+        # 2) ORDER leaves so biggest tiles come first
+        leaf_df = sdf.copy()
+        leaf_df["__is_others"] = (leaf_df["symbol"].astype(str) == "OTHERS").astype(int)
+        leaf_df.sort_values(
+            by=["__is_others", size_col, "abs_pct", "pct"],
+            ascending=[True, False, False, False],
+            inplace=True,
         )
 
-        sec_label = str(sdf.iloc[0]["sector_label"])
-        sec_id = f"sec:{sec}"
+        sec_label = str(leaf_df.iloc[0]["sector_label"])
+        sec_id = f"sec:{sec}"  # JS uses this to draw header bar
         w_sec = float(sector_weight.get(sec, 1.0))
 
-        # sector node (container)
+        # sector container node
         labels.append(sec_label)
-        texts.append(unicode_bold(sec_label))     # JS will hide this and draw header bar
+        texts.append(unicode_bold(sec_label))
         ids.append(sec_id)
         parents.append("")
         values.append(w_sec)
         colors.append("#000000")
-        customdata.append([float(sdf["turnover"].sum()), float(sdf["dirr"].mean()), float(sdf["pct"].mean())])
+        customdata.append([
+            float(leaf_df["turnover"].sum()),
+            float(leaf_df["dirr"].mean()),
+            float(leaf_df["pct"].mean()),
+        ])
 
-        # children sum must equal sector value for branchvalues="total"
-        w = sdf[size_col].astype(float)
+        # leaf sizing within sector
+        w = leaf_df[size_col].astype(float)
         if float(w.sum()) <= 1e-9:
-            w = (sdf["abs_pct"].astype(float) + 0.01)
+            w = (leaf_df["abs_pct"].astype(float) + 0.01)
         wsum = float(w.sum())
 
-        for (_, r), wi in zip(sdf.iterrows(), w.tolist()):
+        for _, r in leaf_df.iterrows():
             sym = str(r["symbol"])
-            leaf_area = (float(wi) / (wsum + 1e-9)) * w_sec
+            wi = float(r.get(size_col) or 0.0)
+            leaf_area = (wi / (wsum + 1e-9)) * w_sec
 
             labels.append(sym)
             texts.append(heatmap_short_symbol(sym))
@@ -265,7 +297,7 @@ def build_market_heatmap_figure(rows: List[Dict[str, Any]]) -> go.Figure:
             customdata=customdata,
             marker=dict(colors=colors, line=dict(width=2.0, color=_LINE)),
             branchvalues="total",
-            sort=False,
+            sort=False,  # we control ordering ourselves
             tiling=dict(packing=HEATMAP_PACKING, pad=1),
             hovertemplate=(
                 "<b>%{label}</b>"
